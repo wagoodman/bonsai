@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,10 +14,23 @@ import (
 	"github.com/wagoodman/bonsai/internal/bus"
 )
 
+// colorEnabled reports whether the table report should emit ANSI color: only when stdout is
+// a terminal and NO_COLOR is unset. Reports are printed to stdout after the UI tears down.
+func colorEnabled() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
 const (
-	formatText     = "text"
-	formatMarkdown = "markdown"
+	formatTable    = "table"
 	formatJSON     = "json"
+	formatMarkdown = "markdown"
 )
 
 type analyzeConfig struct {
@@ -30,8 +44,8 @@ type analyzeConfig struct {
 func Root(app clio.Application) *cobra.Command {
 	opts := &analyzeConfig{
 		Format: options.Format{
-			Output:           formatText,
-			AllowableFormats: []string{formatText, formatMarkdown, formatJSON},
+			Output:           formatTable,
+			AllowableFormats: []string{formatTable, formatJSON, formatMarkdown},
 		},
 		Analysis: options.DefaultAnalysis(),
 	}
@@ -65,9 +79,11 @@ func Root(app clio.Application) *cobra.Command {
 
 func runAnalyze(opts *analyzeConfig) error {
 	an, err := bonsai.Analyze(bonsai.Config{
-		Dir:    opts.Dir,
-		Target: opts.Target,
-		Binary: opts.Binary,
+		Dir:         opts.Dir,
+		Target:      opts.Target,
+		Binary:      opts.Binary,
+		Ignore:      opts.Ignore,
+		HideIgnored: opts.HideIgnored,
 	})
 	if err != nil {
 		return err
@@ -75,8 +91,8 @@ func runAnalyze(opts *analyzeConfig) error {
 
 	buf := &strings.Builder{}
 	switch strings.ToLower(opts.Output) {
-	case formatText:
-		err = bonsai.WriteText(buf, an, opts.Top)
+	case formatTable:
+		err = bonsai.WriteTable(buf, an, opts.Top, colorEnabled())
 	case formatMarkdown:
 		err = bonsai.WriteMarkdown(buf, an, opts.Top)
 	case formatJSON:

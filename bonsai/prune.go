@@ -50,41 +50,92 @@ func (g *buildGraph) reachableFromModule(m string) map[string]bool {
 	return seen
 }
 
-// pruneActions groups freeable packages by their blocker set — the set of direct deps
-// that must all be dropped for the package to leave the binary — and reports the bytes
-// freed per group. Single-dep groups are exclusive wins; multi-dep groups are co-prunes.
-func (g *buildGraph) pruneActions(selfSize map[string]uint64) []PruneAction {
+// blockerSets returns, for each freeable package, the set of droppable direct deps whose
+// subtree reaches it — i.e. the deps that must all be dropped for the package to leave the
+// binary. Ignored deps are treated as permanent: they are excluded as blockers, and any
+// package reachable only through them is "kept regardless" and never appears here.
+func (g *buildGraph) blockerSets(ignore ignoreMatcher) map[string][]string {
 	base := g.reachable(nil)
 
-	// packages still reachable when first-party imports NO direct dep are "kept
-	// regardless" (used directly by first-party or std) and can never be pruned away.
-	allDirect := map[string]bool{}
+	// droppable direct deps: every direct dependency the user hasn't pinned via ignore.
+	droppable := make([]string, 0, len(g.directMods))
+	cut := map[string]bool{}
 	for m := range g.directMods {
-		allDirect[m] = true
+		if ignore.match(m) {
+			continue
+		}
+		droppable = append(droppable, m)
+		cut[m] = true
 	}
-	keptRegardless := g.reachable(allDirect)
+	sort.Strings(droppable)
 
-	// TODO: support a configurable ignore list of dependencies we will never drop (e.g.
-	// core deps like stereoscope/containerd), so we don't bother computing or listing
-	// "what if we dropped X" actions for them. Accept module paths and globs (maybe
-	// package paths too) — anything matched is excluded from `directs` here, which also
-	// removes it as a blocker so co-prune groups collapse to only the droppable deps.
-	directs := make([]string, 0, len(g.directMods))
-	for m := range g.directMods {
-		directs = append(directs, m)
-	}
-	sort.Strings(directs)
+	// packages still reachable when first-party imports none of the droppable deps are
+	// "kept regardless" (reached via std, first-party, or an ignored dep) and can never be
+	// pruned away.
+	keptRegardless := g.reachable(cut)
 
-	// blockers[pkg] = direct deps whose subtree reaches pkg (built one dep at a time to
+	// blockers[pkg] = droppable deps whose subtree reaches pkg (built one dep at a time to
 	// avoid holding many reachability sets at once).
 	blockers := map[string][]string{}
-	for _, m := range directs {
+	for _, m := range droppable {
 		for pkg := range g.reachableFromModule(m) {
 			if base[pkg] && !keptRegardless[pkg] {
 				blockers[pkg] = append(blockers[pkg], m)
 			}
 		}
 	}
+	return blockers
+}
+
+// sharedModules reports dependencies pulled into the binary through more than one droppable
+// direct dep — load-bearing weight that no single prune removes. SharedBy is the number of
+// distinct direct deps whose subtrees reach the module. Modules reachable through a single
+// dep are exclusive prune candidates (covered by the prune table) and excluded here.
+func (g *buildGraph) sharedModules(selfSize map[string]uint64, ignore ignoreMatcher) []SharedModule {
+	blockers := g.blockerSets(ignore)
+
+	bytes := map[string]uint64{}
+	deps := map[string]map[string]bool{}
+	for pkg, bl := range blockers {
+		mod := g.moduleOfPkg[pkg]
+		if mod == "" {
+			continue // standard library has no module to attribute shared weight to
+		}
+		bytes[mod] += selfSize[pkg]
+		if deps[mod] == nil {
+			deps[mod] = map[string]bool{}
+		}
+		for _, d := range bl {
+			deps[mod][d] = true
+		}
+	}
+
+	var out []SharedModule
+	for mod, ds := range deps {
+		if len(ds) < 2 {
+			continue // single-dep modules are exclusive prune candidates, not shared weight
+		}
+		out = append(out, SharedModule{
+			Module:   mod,
+			Bytes:    bytes[mod],
+			SharedBy: len(ds),
+			Ignored:  ignore.match(mod),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Bytes != out[j].Bytes {
+			return out[i].Bytes > out[j].Bytes
+		}
+		return out[i].Module < out[j].Module
+	})
+	return out
+}
+
+// pruneActions groups freeable packages by their blocker set — the set of direct deps
+// that must all be dropped for the package to leave the binary — and reports the bytes
+// freed per group. Single-dep groups are exclusive wins; multi-dep groups are co-prunes.
+func (g *buildGraph) pruneActions(selfSize map[string]uint64, ignore ignoreMatcher) []PruneAction {
+	blockers := g.blockerSets(ignore)
 
 	type group struct {
 		deps     []string

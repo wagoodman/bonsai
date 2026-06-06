@@ -6,7 +6,10 @@ import (
 	"io"
 	"sort"
 	"strings"
-	"text/tabwriter"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
+	"github.com/muesli/termenv"
 )
 
 // WriteJSON renders the analysis as indented JSON.
@@ -16,15 +19,279 @@ func WriteJSON(w io.Writer, an *Analysis) error {
 	return enc.Encode(an)
 }
 
-// WriteText renders the human-readable report (plain text) to w, showing up to top rows
-// in each ranked table.
-func WriteText(w io.Writer, an *Analysis, top int) error {
-	return writeReport(w, an, top, false)
+// WriteTable renders the human-readable report with aligned tables, using ANSI color when
+// color is true (a TTY destination). Shows up to top rows in each ranked table.
+//
+// The report is rendered into a buffer and printed later, so lipgloss's own stdout-based
+// color detection doesn't apply; we force the renderer's profile to match the caller's
+// decision (caller already verified the destination is a color-capable TTY).
+func WriteTable(w io.Writer, an *Analysis, top int, color bool) error {
+	if color {
+		lipgloss.SetColorProfile(termenv.ANSI)
+	}
+	return (&report{w: w, top: top, pal: palette{on: color}}).write(an)
 }
 
-// WriteMarkdown renders the report with markdown headings and fenced code blocks.
+// WriteMarkdown renders the report with markdown headings and fenced/pipe tables (no color).
 func WriteMarkdown(w io.Writer, an *Analysis, top int) error {
-	return writeReport(w, an, top, true)
+	return (&report{w: w, top: top, md: true}).write(an)
+}
+
+// palette gates ANSI styling: when off, every helper returns its input unchanged so the
+// same rendering code produces plain text for pipes, markdown, and NO_COLOR.
+type palette struct{ on bool }
+
+var (
+	styTitle  = lipgloss.NewStyle().Bold(true)
+	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan
+	styDim    = lipgloss.NewStyle().Faint(true)
+	styGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
+	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
+	styStrong = lipgloss.NewStyle().Bold(true)
+)
+
+func (p palette) render(s lipgloss.Style, txt string) string {
+	if !p.on {
+		return txt
+	}
+	return s.Render(txt)
+}
+
+func (p palette) title(s string) string  { return p.render(styTitle, s) }
+func (p palette) head(s string) string   { return p.render(styHead, s) }
+func (p palette) dim(s string) string    { return p.render(styDim, s) }
+func (p palette) good(s string) string   { return p.render(styGood, s) }
+func (p palette) warn(s string) string   { return p.render(styWarn, s) }
+func (p palette) strong(s string) string { return p.render(styStrong, s) }
+
+// report carries the rendering mode and writer through the section helpers.
+type report struct {
+	w   io.Writer
+	top int
+	md  bool
+	pal palette
+}
+
+func (r *report) write(an *Analysis) error {
+	r.summary(an)
+	r.breakdown(an)
+	r.sections(an)
+	r.largestModules(an)
+	r.pruneCandidates(an)
+	r.sharedModules(an)
+	return nil
+}
+
+func (r *report) heading(title, subtitle string) {
+	if r.md {
+		fmt.Fprintf(r.w, "## %s\n\n", title)
+		if subtitle != "" {
+			fmt.Fprintf(r.w, "_%s_\n\n", subtitle)
+		}
+		return
+	}
+	fmt.Fprintf(r.w, "%s\n", r.pal.title(title))
+	if subtitle != "" {
+		fmt.Fprintf(r.w, "%s\n", r.pal.dim(subtitle))
+	}
+}
+
+func (r *report) summary(an *Analysis) {
+	if r.md {
+		fmt.Fprintf(r.w, "# binary size analysis\n\n")
+	} else {
+		fmt.Fprintf(r.w, "%s\n\n", r.pal.title("binary size analysis"))
+	}
+
+	if !an.Stripped && an.BinarySize > an.AccountedSize {
+		removed := an.BinarySize - an.AccountedSize
+		fmt.Fprintf(r.w, "  analyzed (unstripped)    %s\n", r.pal.strong(humize(an.BinarySize)))
+		fmt.Fprintf(r.w, "  stripped (≈ release)     %s   %s\n",
+			r.pal.strong(humize(an.AccountedSize)),
+			r.pal.dim(fmt.Sprintf("debug + symbols −%s removed by `-s -w`", humize(removed))))
+	} else {
+		fmt.Fprintf(r.w, "  binary size              %s\n", r.pal.strong(humize(an.AccountedSize)))
+	}
+	if an.Stripped {
+		fmt.Fprintf(r.w, "\n  %s\n", r.pal.warn("binary is stripped — only executable code could be attributed (no data/pclntab)"))
+	}
+	fmt.Fprintln(r.w)
+}
+
+func (r *report) breakdown(an *Analysis) {
+	denom := an.AccountedSize
+	var thirdParty uint64
+	for _, m := range an.Modules {
+		if m.Module != an.MainModule {
+			thirdParty += m.Size
+		}
+	}
+
+	fmt.Fprintf(r.w, "%s\n", r.pal.head("by content"))
+	fmt.Fprintf(r.w, "  executable code    %9s  %s\n", humize(an.CodeSize), r.pal.dim(pctStr(an.CodeSize, denom)))
+	fmt.Fprintf(r.w, "  named data         %9s  %s\n", humize(an.DataSize), r.pal.dim(pctStr(an.DataSize, denom)))
+	fmt.Fprintf(r.w, "  gopclntab metadata %9s  %s\n", humize(an.PclntabSize), r.pal.dim(pctStr(an.PclntabSize, denom)))
+	fmt.Fprintln(r.w)
+
+	fmt.Fprintf(r.w, "%s  %s\n", r.pal.head("by owner"), r.pal.dim("(code + data + pclntab share)"))
+	fmt.Fprintf(r.w, "  main module (%s)  %9s\n", shortModule(an.MainModule), humize(an.MainSize))
+	fmt.Fprintf(r.w, "  third-party        %9s\n", humize(thirdParty))
+	fmt.Fprintf(r.w, "  std library        %9s\n", humize(an.StdSize))
+	fmt.Fprintf(r.w, "  generated/anon     %9s  %s\n", humize(an.GeneratedSize), r.pal.dim("(pooled constants, type metadata)"))
+	fmt.Fprintln(r.w)
+}
+
+func (r *report) sections(an *Analysis) {
+	secs := append([]SectionInfo(nil), an.Sections...)
+	sort.Slice(secs, func(i, j int) bool { return secs[i].Size > secs[j].Size })
+
+	r.heading("Sections (file-backed)", "")
+	rows := [][]string{}
+	for i, s := range secs {
+		if i >= 8 || s.Size == 0 {
+			break
+		}
+		rows = append(rows, []string{humize(s.Size), pctStr(s.Size, an.AccountedSize), s.Name})
+	}
+	r.table([]string{"SIZE", "%BIN", "SECTION"}, rows, nil)
+}
+
+func (r *report) largestModules(an *Analysis) {
+	r.heading("Largest modules by size", "")
+	rows := [][]string{}
+	var dim []bool
+	shown := 0
+	for _, m := range an.Modules {
+		if m.Module == an.MainModule {
+			continue
+		}
+		if m.Ignored && an.HideIgnored {
+			continue
+		}
+		kind := "indirect"
+		if m.Direct {
+			kind = "direct"
+		}
+		if m.Ignored {
+			kind = "ignored"
+		}
+		rows = append(rows, []string{humize(m.Size), pctStr(m.Size, an.AccountedSize), kind, m.Module})
+		dim = append(dim, m.Ignored)
+		if shown++; shown >= r.top {
+			break
+		}
+	}
+	r.table([]string{"SIZE", "%BIN", "KIND", "MODULE"}, rows, dim)
+}
+
+func (r *report) pruneCandidates(an *Analysis) {
+	prunable := make([]ModuleSize, 0, len(an.Modules))
+	for _, m := range an.Modules {
+		if m.Prune != nil {
+			prunable = append(prunable, m)
+		}
+	}
+	sort.Slice(prunable, func(i, j int) bool { return prunable[i].Prune.FreedBytes > prunable[j].Prune.FreedBytes })
+
+	r.heading("Prune candidates",
+		"drop a direct dep → bytes freed (own size + transitively-orphaned deps); coupling = how wired-in it is")
+	rows := [][]string{}
+	for i, m := range prunable {
+		if i >= r.top {
+			break
+		}
+		c := coup(m)
+		rows = append(rows, []string{
+			r.pal.good(humize(m.Prune.FreedBytes)), humize(m.Size), itoa(len(m.Prune.FreedModules)),
+			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Module,
+		})
+	}
+	r.table([]string{"FREED", "OWN", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "MODULE"}, rows, nil)
+}
+
+func (r *report) sharedModules(an *Analysis) {
+	shared := an.Shared
+	if an.HideIgnored {
+		shared = shared[:0:0]
+		for _, s := range an.Shared {
+			if !s.Ignored {
+				shared = append(shared, s)
+			}
+		}
+	}
+
+	r.heading("Load-bearing / shared",
+		"pulled in by 2+ direct deps — structural weight no single prune removes (good ignore-list candidates)")
+	if len(shared) == 0 {
+		fmt.Fprintf(r.w, "  %s\n\n", r.pal.dim("none — every freeable module is exclusive to one direct dep"))
+		return
+	}
+	rows := [][]string{}
+	var dim []bool
+	for i, s := range shared {
+		if i >= r.top {
+			break
+		}
+		rows = append(rows, []string{humize(s.Bytes), fmt.Sprintf("%d deps", s.SharedBy), s.Module})
+		dim = append(dim, s.Ignored)
+	}
+	r.table([]string{"SIZE", "SHARED-BY", "MODULE"}, rows, dim)
+}
+
+// table renders a titled table. In markdown mode it emits a pipe table; otherwise a
+// color-aware aligned table (lipgloss measures width ignoring ANSI, so styled cells stay
+// aligned). dim[i], when set, faints row i (used for ignored modules). goodCol, when >= 0,
+// is unused here but reserved for column-specific emphasis.
+func (r *report) table(headers []string, rows [][]string, dim []bool) {
+	if len(rows) == 0 {
+		fmt.Fprintf(r.w, "  %s\n\n", r.pal.dim("(none)"))
+		return
+	}
+	if r.md {
+		r.markdownTable(headers, rows)
+		return
+	}
+
+	t := table.New().
+		Border(lipgloss.Border{}).
+		BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).
+		BorderHeader(false).BorderColumn(false).BorderRow(false).
+		Headers(headers...).
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			base := lipgloss.NewStyle().PaddingRight(2)
+			switch {
+			case !r.pal.on:
+				return base
+			case row == table.HeaderRow:
+				return base.Inherit(styHead)
+			case row >= 0 && row < len(dim) && dim[row]:
+				return base.Inherit(styDim)
+			default:
+				return base
+			}
+		})
+	fmt.Fprintln(r.w, indent(trimTrailingSpace(t.String()), "  "))
+	fmt.Fprintln(r.w)
+}
+
+func (r *report) markdownTable(headers []string, rows [][]string) {
+	fmt.Fprintf(r.w, "| %s |\n", strings.Join(headers, " | "))
+	seps := make([]string, len(headers))
+	for i := range seps {
+		seps[i] = "---"
+	}
+	fmt.Fprintf(r.w, "| %s |\n", strings.Join(seps, " | "))
+	for _, row := range rows {
+		// markdown cells must not carry ANSI; rows here are built plain except colorized
+		// numbers, so strip any escapes defensively.
+		cells := make([]string, len(row))
+		for i, c := range row {
+			cells[i] = stripANSI(c)
+		}
+		fmt.Fprintf(r.w, "| %s |\n", strings.Join(cells, " | "))
+	}
+	fmt.Fprintln(r.w)
 }
 
 func humize(b uint64) string {
@@ -47,278 +314,48 @@ func coup(m ModuleSize) *Coupling {
 	return &Coupling{}
 }
 
-func writeReport(w io.Writer, an *Analysis, top int, md bool) error {
-	var thirdParty uint64
-	for _, m := range an.Modules {
-		if m.Module != an.MainModule {
-			thirdParty += m.Size
-		}
-	}
-	denom := an.AccountedSize // the stripped size: all per-content/per-owner numbers are of this
-	fmt.Fprintf(w, "# binary size analysis\n\n")
-	if !an.Stripped && an.BinarySize > an.AccountedSize {
-		// the analyzed file is an unstripped build; show what stripping removes.
-		removed := an.BinarySize - an.AccountedSize
-		fmt.Fprintf(w, "analyzed binary (unstripped):   %s\n", humize(an.BinarySize))
-		fmt.Fprintf(w, "  debug info + symbol table:    %s (%.0f%%)   removed by `-s -w` stripping\n", humize(removed), pct(removed, an.BinarySize))
-		fmt.Fprintf(w, "  stripped binary:              %s (%.0f%%)   matches the release artifact\n", humize(an.AccountedSize), pct(an.AccountedSize, an.BinarySize))
-	} else {
-		fmt.Fprintf(w, "binary size:                    %s\n", humize(an.AccountedSize))
-	}
-	fmt.Fprintln(w)
-
-	fmt.Fprintf(w, "stripped binary by content:\n")
-	fmt.Fprintf(w, "  executable code:    %s (%.0f%%)\n", humize(an.CodeSize), pct(an.CodeSize, denom))
-	fmt.Fprintf(w, "  named data:         %s (%.0f%%)\n", humize(an.DataSize), pct(an.DataSize, denom))
-	fmt.Fprintf(w, "  gopclntab metadata: %s (%.0f%%)  (distributed per-package, proportional to code)\n", humize(an.PclntabSize), pct(an.PclntabSize, denom))
-	fmt.Fprintf(w, "stripped binary by owner (code + data + pclntab share):\n")
-	fmt.Fprintf(w, "  main module (%s): %s\n", shortModule(an.MainModule), humize(an.MainSize))
-	fmt.Fprintf(w, "  third-party:        %s\n", humize(thirdParty))
-	fmt.Fprintf(w, "  std library:        %s\n", humize(an.StdSize))
-	fmt.Fprintf(w, "  generated/anonymous:%s  (pooled constants & type metadata; incl. anonymous rodata)\n", humize(an.GeneratedSize))
-	if an.Stripped {
-		fmt.Fprintf(w, "\nwarning: binary is stripped — only executable code could be attributed (no data/pclntab).\n")
-	}
-	fmt.Fprintln(w)
-
-	// section breakdown shows where bytes live (text, pclntab, rodata, ...).
-	secs := append([]SectionInfo(nil), an.Sections...)
-	sort.Slice(secs, func(i, j int) bool { return secs[i].Size > secs[j].Size })
-	t0 := newTable(w, md, "Sections (file-backed)", "", "SIZE", "%BIN", "SECTION")
-	for i, s := range secs {
-		if i >= 8 || s.Size == 0 {
-			break
-		}
-		t0.row(humize(s.Size), fmt.Sprintf("%.1f%%", pct(s.Size, denom)), s.Name)
-	}
-	t0.flush()
-
-	// table 1: largest modules overall, flagging indirect (transitively pulled-in) ones.
-	t1 := newTable(w, md, "Largest modules by size",
-		"", "SIZE", "%BIN", "KIND", "MODULE")
-	shown := 0
-	for _, m := range an.Modules {
-		if m.Module == an.MainModule {
-			continue
-		}
-		kind := "indirect"
-		if m.Direct {
-			kind = "direct"
-		}
-		t1.row(humize(m.Size), fmt.Sprintf("%.1f%%", pct(m.Size, an.AccountedSize)), kind, m.Module)
-		if shown++; shown >= top {
-			break
-		}
-	}
-	t1.flush()
-
-	// table 2: prune candidates — direct deps ranked by bytes freed if removed.
-	prunable := make([]ModuleSize, 0, len(an.Modules))
-	for _, m := range an.Modules {
-		if m.Prune != nil {
-			prunable = append(prunable, m)
-		}
-	}
-	sort.Slice(prunable, func(i, j int) bool { return prunable[i].Prune.FreedBytes > prunable[j].Prune.FreedBytes })
-	t2 := newTable(w, md, "Prune candidates (direct deps, ranked by bytes freed if removed)",
-		"freed = own size + transitively-orphaned deps if first-party code stopped importing it",
-		"FREED", "OWN", "MODS", "IMP-PKGS", "IMP-SITES", "SYMS", "MODULE")
-	for i, m := range prunable {
-		if i >= top {
-			break
-		}
-		c := coup(m)
-		t2.row(humize(m.Prune.FreedBytes), humize(m.Size), itoa(len(m.Prune.FreedModules)),
-			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Module)
-	}
-	t2.flush()
-
-	// table 3: low-hanging fruit — direct deps with the fewest tendrils into the code.
-	easy := append([]ModuleSize(nil), prunable...)
-	sort.Slice(easy, func(i, j int) bool {
-		ci, cj := coup(easy[i]), coup(easy[j])
-		if ci.DistinctSymbols != cj.DistinctSymbols {
-			return ci.DistinctSymbols < cj.DistinctSymbols
-		}
-		return easy[i].Prune.FreedBytes > easy[j].Prune.FreedBytes
-	})
-	t3 := newTable(w, md, "Easiest to remove (direct deps with fewest first-party tendrils)",
-		"low symbol/import counts => loosely coupled; pair with FREED to spot cheap wins",
-		"SYMS", "IMP-PKGS", "IMP-SITES", "FREED", "MODULE")
-	for i, m := range easy {
-		if i >= top {
-			break
-		}
-		c := coup(m)
-		t3.row(itoa(c.DistinctSymbols), itoa(c.ImportingPackages), itoa(c.ImportSites),
-			humize(m.Prune.FreedBytes), m.Module)
-	}
-	t3.flush()
-
-	writeActionTree(w, an, top, md)
-	return nil
-}
-
-// writeActionTree renders the prune actions as a tree: each "drop ..." line is an action
-// and the modules beneath it are what that action frees. Single-dep actions are direct
-// wins; co-prune actions free modules that no single drop would (they need every listed
-// dep dropped because each independently pulls the modules in).
-func writeActionTree(w io.Writer, an *Analysis, top int, md bool) {
-	// only show actions that reveal structure the candidates table doesn't already:
-	// single drops that orphan OTHER modules, and co-prune groups above a real floor.
-	const coPruneFloor = 100_000 // bytes; below this a multi-dep group is noise
-	var singles, coprune []PruneAction
-	for _, a := range an.Actions {
-		switch {
-		case len(a.Deps) == 1 && freesBeyondSelf(a):
-			singles = append(singles, a)
-		case len(a.Deps) >= 2 && a.Bytes >= coPruneFloor:
-			coprune = append(coprune, a)
-		}
-	}
-
-	blockStart(w, md, "Prune action tree",
-		"each leaf is the portion of a module freed by the action; a module can appear in several actions (its packages have different blockers). co-prune groups free nothing until ALL their deps are dropped together")
-
-	fmt.Fprintln(w, "single-dep drops that also orphan transitive deps (see the table above for the rest):")
-	for i, a := range singles {
-		if i >= top {
-			fmt.Fprintf(w, "  … %d more single-dep drops\n", len(singles)-i)
-			break
-		}
-		renderAction(w, a, false)
-	}
-
-	fmt.Fprintln(w)
-	if len(coprune) == 0 {
-		fmt.Fprintln(w, "co-prune groups: none — every freeable module is exclusive to one direct dep")
-	} else {
-		fmt.Fprintln(w, "co-prune groups (freed ONLY if every listed dep is dropped together):")
-		for i, a := range coprune {
-			if i >= top {
-				fmt.Fprintf(w, "  … %d more co-prune groups\n", len(coprune)-i)
-				break
-			}
-			renderAction(w, a, true)
-		}
-	}
-	blockEnd(w, md)
-}
-
-func renderAction(w io.Writer, a PruneAction, co bool) {
-	const maxLeaves = 6
-	header := "drop " + strings.Join(a.Deps, " + ")
-	suffix := fmt.Sprintf("%s (%d modules)", humize(a.Bytes), len(a.Modules))
-	if co {
-		suffix = fmt.Sprintf("+%s (%d modules, needs all %d deps)", humize(a.Bytes), len(a.Modules), len(a.Deps))
-	}
-	fmt.Fprintf(w, "\n%s  →  %s\n", header, suffix)
-
-	leaves := a.Modules
-	var moreCount int
-	var moreBytes uint64
-	if len(leaves) > maxLeaves {
-		for _, m := range leaves[maxLeaves:] {
-			moreBytes += m.Bytes
-		}
-		moreCount = len(leaves) - maxLeaves
-		leaves = leaves[:maxLeaves]
-	}
-	hasTail := moreCount > 0 || a.StdBytes > 0
-	for i, m := range leaves {
-		last := i == len(leaves)-1 && !hasTail
-		fmt.Fprintf(w, "%s %-52s %s\n", branch(last), m.Module, humize(m.Bytes))
-	}
-	if moreCount > 0 {
-		fmt.Fprintf(w, "%s %-52s %s\n", branch(a.StdBytes == 0), fmt.Sprintf("+ %d more modules", moreCount), humize(moreBytes))
-	}
-	if a.StdBytes > 0 {
-		fmt.Fprintf(w, "%s %-52s %s\n", branch(true), "(standard-library packages)", humize(a.StdBytes))
-	}
-}
-
-// freesBeyondSelf reports whether a single-dep drop orphans modules other than the dep
-// itself — i.e. it has a transitive tree worth showing. A drop that frees only its own
-// module is already conveyed by the prune-candidates table.
-func freesBeyondSelf(a PruneAction) bool {
-	for _, m := range a.Modules {
-		if m.Module != a.Deps[0] {
-			return true
-		}
-	}
-	return false
-}
-
-func branch(last bool) string {
-	if last {
-		return "└─"
-	}
-	return "├─"
-}
-
-func blockStart(w io.Writer, md bool, title, subtitle string) {
-	if md {
-		fmt.Fprintf(w, "## %s\n\n", title)
-		if subtitle != "" {
-			fmt.Fprintf(w, "_%s_\n\n", subtitle)
-		}
-		fmt.Fprintln(w, "```")
-		return
-	}
-	fmt.Fprintf(w, "== %s ==\n", title)
-	if subtitle != "" {
-		fmt.Fprintf(w, "%s\n", subtitle)
-	}
-}
-
-func blockEnd(w io.Writer, md bool) {
-	if md {
-		fmt.Fprintln(w, "```")
-	}
-	fmt.Fprintln(w)
-}
-
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
-
-// table renders an aligned columnar table, fenced as a code block in markdown mode.
-type table struct {
-	w   io.Writer
-	md  bool
-	tw  *tabwriter.Writer
-	hdr []string
-}
-
-func newTable(w io.Writer, md bool, title, subtitle string, header ...string) *table {
-	if md {
-		fmt.Fprintf(w, "## %s\n\n", title)
-		if subtitle != "" {
-			fmt.Fprintf(w, "_%s_\n\n", subtitle)
-		}
-		fmt.Fprintln(w, "```")
-	} else {
-		fmt.Fprintf(w, "== %s ==\n", title)
-		if subtitle != "" {
-			fmt.Fprintf(w, "%s\n", subtitle)
-		}
-	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(header, "\t"))
-	return &table{w: w, md: md, tw: tw, hdr: header}
-}
-
-func (t *table) row(cells ...string) { fmt.Fprintln(t.tw, strings.Join(cells, "\t")) }
-
-func (t *table) flush() {
-	t.tw.Flush()
-	if t.md {
-		fmt.Fprintln(t.w, "```")
-	}
-	fmt.Fprintln(t.w)
-}
 
 func pct(part, whole uint64) float64 {
 	if whole == 0 {
 		return 0
 	}
 	return float64(part) / float64(whole) * 100
+}
+
+func pctStr(part, whole uint64) string { return fmt.Sprintf("%.1f%%", pct(part, whole)) }
+
+// trimTrailingSpace strips trailing spaces from each line (lipgloss pads the final column).
+func trimTrailingSpace(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " \t")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// indent prefixes every non-empty line of s with pad.
+func indent(s, pad string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, ln := range lines {
+		if ln != "" {
+			lines[i] = pad + ln
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stripANSI removes ANSI SGR escape sequences so styled cells can be embedded in markdown.
+func stripANSI(s string) string {
+	for {
+		i := strings.IndexByte(s, 0x1b)
+		if i < 0 {
+			return s
+		}
+		j := strings.IndexByte(s[i:], 'm')
+		if j < 0 {
+			return s[:i]
+		}
+		s = s[:i] + s[i+j+1:]
+	}
 }

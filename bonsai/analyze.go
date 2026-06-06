@@ -19,9 +19,11 @@ import (
 // switches to fallback mode: analyze a prebuilt binary, resolving its source for the build
 // graph (no build, no dumpdep — reachability falls back to source-level imports).
 type Config struct {
-	Dir    string // module directory to build/analyze (default: current directory)
-	Target string // build target package (default: the module's sole main package)
-	Binary string // analyze this prebuilt binary instead of building from source (fallback mode)
+	Dir         string   // module directory to build/analyze (default: current directory)
+	Target      string   // build target package (default: the module's sole main package)
+	Binary      string   // analyze this prebuilt binary instead of building from source (fallback mode)
+	Ignore      []string // module patterns never suggested for pruning (exact, glob, or "path/...")
+	HideIgnored bool     // omit ignored modules from output entirely (default: show them de-emphasized)
 }
 
 // ModuleSize is the aggregated size and metadata for one module in the binary.
@@ -30,26 +32,39 @@ type ModuleSize struct {
 	Size     uint64       `json:"size"`
 	Direct   bool         `json:"direct"`
 	InBuild  bool         `json:"inBuild"`
+	Ignored  bool         `json:"ignored,omitempty"` // on the user's never-prune list
 	Prune    *PruneResult `json:"prune,omitempty"`
 	Coupling *Coupling    `json:"coupling,omitempty"`
+}
+
+// SharedModule is a dependency pulled into the binary by more than one direct dep — shared,
+// load-bearing weight that no single prune can remove. SharedBy counts the distinct direct
+// dependencies whose subtree reaches it; higher means more structural.
+type SharedModule struct {
+	Module   string `json:"module"`
+	Bytes    uint64 `json:"bytes"`
+	SharedBy int    `json:"sharedBy"`
+	Ignored  bool   `json:"ignored,omitempty"`
 }
 
 // Analysis is the complete result of attributing a binary's size to its modules and
 // estimating the cost/benefit of pruning each direct dependency.
 type Analysis struct {
-	BinarySize    uint64        `json:"binarySize"`    // analyzed file size on disk
-	AccountedSize uint64        `json:"accountedSize"` // file-backed, non-debug sections (~ stripped binary size)
-	CodeSize      uint64        `json:"codeSize"`      // executable code
-	DataSize      uint64        `json:"dataSize"`      // named data (rodata/data globals)
-	PclntabSize   uint64        `json:"pclntabSize"`   // gopclntab metadata (distributed proportionally)
-	StdSize       uint64        `json:"stdSize"`       // standard library
-	MainSize      uint64        `json:"mainSize"`      // main module
-	MainModule    string        `json:"mainModule"`
-	GeneratedSize uint64        `json:"generatedSize"` // compiler-generated + anonymous (pooled constants, type metadata)
-	Stripped      bool          `json:"stripped"`      // true if only code could be attributed
-	Sections      []SectionInfo `json:"sections"`
-	Modules       []ModuleSize  `json:"modules"`
-	Actions       []PruneAction `json:"pruneActions"`
+	BinarySize    uint64         `json:"binarySize"`    // analyzed file size on disk
+	AccountedSize uint64         `json:"accountedSize"` // file-backed, non-debug sections (~ stripped binary size)
+	CodeSize      uint64         `json:"codeSize"`      // executable code
+	DataSize      uint64         `json:"dataSize"`      // named data (rodata/data globals)
+	PclntabSize   uint64         `json:"pclntabSize"`   // gopclntab metadata (distributed proportionally)
+	StdSize       uint64         `json:"stdSize"`       // standard library
+	MainSize      uint64         `json:"mainSize"`      // main module
+	MainModule    string         `json:"mainModule"`
+	GeneratedSize uint64         `json:"generatedSize"` // compiler-generated + anonymous (pooled constants, type metadata)
+	Stripped      bool           `json:"stripped"`      // true if only code could be attributed
+	Sections      []SectionInfo  `json:"sections"`
+	Modules       []ModuleSize   `json:"modules"`
+	Shared        []SharedModule `json:"shared"` // load-bearing deps pulled in by 2+ direct deps
+	Actions       []PruneAction  `json:"pruneActions"`
+	HideIgnored   bool           `json:"-"` // presentation: drop ignored modules instead of dimming them
 }
 
 // Analyze resolves the build graph for the configured module (or prebuilt binary) and
@@ -110,7 +125,21 @@ func analyzeFromSource(cfg Config) (*Analysis, error) {
 	}
 	graphTask.SetCompleted()
 
-	return analyze(bin, g), nil
+	return analyze(bin, g, optsFrom(cfg)), nil
+}
+
+// optsFrom derives the internal analysis options (ignore handling) from the public Config.
+func optsFrom(cfg Config) analyzeOpts {
+	return analyzeOpts{
+		ignore:      newIgnoreMatcher(cfg.Ignore),
+		hideIgnored: cfg.HideIgnored,
+	}
+}
+
+// analyzeOpts carries the non-binary inputs that shape the joined analysis.
+type analyzeOpts struct {
+	ignore      ignoreMatcher
+	hideIgnored bool
 }
 
 // analyzePrebuilt is the fallback path: analyze a binary the user already built. We locate
@@ -149,10 +178,10 @@ func analyzePrebuilt(cfg Config) (*Analysis, error) {
 	}
 	graphTask.SetCompleted()
 
-	return analyze(bin, g), nil
+	return analyze(bin, g, optsFrom(cfg)), nil
 }
 
-func analyze(bin *binaryInfo, g *buildGraph) *Analysis {
+func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 	an := &Analysis{
 		BinarySize:    bin.FileSize,
 		AccountedSize: bin.SectionsSize,
@@ -162,6 +191,7 @@ func analyze(bin *binaryInfo, g *buildGraph) *Analysis {
 		MainModule:    g.mainModule,
 		Stripped:      bin.Stripped,
 		Sections:      bin.Sections,
+		HideIgnored:   opts.hideIgnored,
 	}
 
 	bySize := map[string]uint64{}
@@ -190,16 +220,20 @@ func analyze(bin *binaryInfo, g *buildGraph) *Analysis {
 	}
 
 	for mod, sz := range bySize {
+		ignored := opts.ignore.match(mod)
 		ms := ModuleSize{
 			Module:  mod,
 			Size:    sz,
 			Direct:  g.directMods[mod],
 			InBuild: true,
+			Ignored: ignored,
 		}
 		if mod != g.mainModule {
 			ms.Coupling = coup[mod]
 		}
-		if g.directMods[mod] {
+		// only offer a prune estimate for droppable direct deps; ignored deps are core and
+		// never suggested for removal.
+		if g.directMods[mod] && !ignored {
 			p := g.treeShake(mod, bin.SelfSize, baseReachable)
 			ms.Prune = &p
 		}
@@ -209,7 +243,8 @@ func analyze(bin *binaryInfo, g *buildGraph) *Analysis {
 	attrTask.SetCompleted()
 
 	actionTask := startTask("Compute prune actions", "computing prune actions", "prune actions computed")
-	an.Actions = g.pruneActions(bin.SelfSize)
+	an.Actions = g.pruneActions(bin.SelfSize, opts.ignore)
+	an.Shared = g.sharedModules(bin.SelfSize, opts.ignore)
 	actionTask.SetCompleted()
 
 	return an

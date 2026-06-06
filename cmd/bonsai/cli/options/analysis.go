@@ -15,9 +15,11 @@ var _ interface {
 // argument; Dir here mirrors it for the loaded config.
 type Analysis struct {
 	// bound options (appear in --help)
-	Target string `yaml:"target" json:"target" mapstructure:"target"`
-	Binary string `yaml:"binary" json:"binary" mapstructure:"binary"`
-	Top    int    `yaml:"top" json:"top" mapstructure:"top"`
+	Target      string   `yaml:"target" json:"target" mapstructure:"target"`
+	Binary      string   `yaml:"binary" json:"binary" mapstructure:"binary"`
+	Ignore      []string `yaml:"ignore" json:"ignore" mapstructure:"ignore"`
+	HideIgnored bool     `yaml:"hide-ignored" json:"hide-ignored" mapstructure:"hide-ignored"`
+	Top         int      `yaml:"top" json:"top" mapstructure:"top"`
 
 	Dir string `yaml:"-" json:"-" mapstructure:"-"` // set from the positional directory argument
 }
@@ -35,6 +37,10 @@ func (o *Analysis) AddFlags(flags fangs.FlagSet) {
 		"entrypoint package to build and analyze (default: the module's sole main package)")
 	flags.StringVarP(&o.Binary, "binary", "b",
 		"analyze a prebuilt binary instead of building from source")
+	flags.StringArrayVarP(&o.Ignore, "ignore", "i",
+		"module patterns never suggested for pruning (repeatable; exact, glob, or \"path/...\")")
+	flags.BoolVarP(&o.HideIgnored, "hide-ignored", "",
+		"omit ignored modules from output instead of de-emphasizing them")
 	flags.IntVarP(&o.Top, "top", "t",
 		"number of rows to show in ranked tables")
 }
@@ -51,5 +57,7 @@ func (o *Analysis) PostLoad() error {
 func (o *Analysis) DescribeFields(d fangs.FieldDescriptionSet) {
 	d.Add(&o.Target, "entrypoint package to build and analyze")
 	d.Add(&o.Binary, "prebuilt binary to analyze instead of building from source")
+	d.Add(&o.Ignore, "module patterns never suggested for pruning (exact, glob, or \"path/...\")")
+	d.Add(&o.HideIgnored, "omit ignored modules from output instead of de-emphasizing them")
 	d.Add(&o.Top, "maximum number of rows to show in each ranked table")
 }
