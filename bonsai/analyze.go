@@ -40,6 +40,7 @@ type Config struct {
 
 	HideIgnored bool // omit locked modules from output entirely (default: show them de-emphasized)
 	Blame       bool // also compute Shapley fair-blame attribution (splits shared weight across targets)
+	NoWhy       bool // suppress the import-why trees (the "← imported by" traces); they're on by default
 }
 
 // ModuleSize is the aggregated size and metadata for one module in the binary.
@@ -52,6 +53,7 @@ type ModuleSize struct {
 	Ignored  bool         `json:"ignored,omitempty"` // locked: on the never-prune list
 	Prune    *PruneResult `json:"prune,omitempty"`
 	Coupling *Coupling    `json:"coupling,omitempty"`
+	Why      *ImportNode  `json:"why,omitempty"` // who imports this, traced back to 1st-class code
 }
 
 // Analysis is the complete result of attributing a binary's size to its modules and
@@ -145,6 +147,7 @@ func optsFrom(cfg Config) analyzeOpts {
 		unlock:      newPatternMatcher(cfg.Unlock),
 		hideIgnored: cfg.HideIgnored,
 		blame:       cfg.Blame,
+		why:         !cfg.NoWhy,
 	}
 }
 
@@ -155,6 +158,7 @@ type analyzeOpts struct {
 	unlock      patternMatcher
 	hideIgnored bool
 	blame       bool
+	why         bool
 }
 
 // analyzePrebuilt is the fallback path: analyze a binary the user already built. We locate
@@ -234,6 +238,13 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 	blockers := g.blockerSets(cls)
 	prunes := g.pruneResults(bin.SelfSize, baseReachable, cls, dom, blockers)
 
+	// importers backs the "why is this here?" trees: who imports a module, traced to 1st-class
+	// code. Computed once and shared by the largest-modules and prune-plan rendering.
+	var importers map[string]map[string]bool
+	if opts.why {
+		importers = g.moduleImporters(baseReachable)
+	}
+
 	// coupling needs the main module source tree; skip it when analyzing a prebuilt binary
 	// whose source we couldn't locate.
 	var coup map[string]*Coupling
@@ -258,6 +269,11 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 		if p := prunes[mod]; p != nil {
 			ms.Prune = p
 		}
+		// attach a why trace for everything that isn't already yours (1st-class/main needs no
+		// explanation).
+		if importers != nil && !owned(cls.classOf(mod)) {
+			ms.Why = importWhy(mod, importers, cls, whyBudget)
+		}
 		an.Modules = append(an.Modules, ms)
 	}
 	sort.Slice(an.Modules, func(i, j int) bool { return an.Modules[i].Size > an.Modules[j].Size })
@@ -265,6 +281,9 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 
 	planTask := startTask("Compute prune plan", "computing prune plan", "prune plan computed")
 	an.Plan = g.greedyPlan(bin.SelfSize, baseReachable, cls)
+	if importers != nil {
+		attachPlanWhy(an.Plan, importers, cls)
+	}
 	planTask.SetCompleted()
 
 	if opts.blame {

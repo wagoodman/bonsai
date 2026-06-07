@@ -8,10 +8,11 @@ import "sort"
 // modules across the whole build directly import this unit — its fan-in, a quick read on how
 // shared (load-bearing) it is without cross-referencing the shared table.
 type FreedModule struct {
-	Module    string `json:"module"`
-	Bytes     uint64 `json:"bytes"`
-	Std       bool   `json:"std,omitempty"`
-	Importers int    `json:"importers,omitempty"`
+	Module    string      `json:"module"`
+	Bytes     uint64      `json:"bytes"`
+	Std       bool        `json:"std,omitempty"`
+	Importers int         `json:"importers,omitempty"`
+	Why       *ImportNode `json:"why,omitempty"` // who imports this, traced back to 1st-class code
 }
 
 // reachableFromModule returns every package reachable by following imports from the

@@ -217,6 +217,7 @@ type PrunePlanStep struct {
 	Cumulative uint64        `json:"cumulative"`          // total bytes freed through this step
 	OwnBytes   uint64        `json:"ownBytes"`            // freed bytes that are the pruned module's own code
 	Importers  int           `json:"importers,omitempty"` // distinct modules that directly import the pruned module
+	Why        *ImportNode   `json:"why,omitempty"`       // who imports the pruned module, traced to 1st-class code
 	Freed      []FreedModule `json:"freed,omitempty"`     // dependency modules orphaned at this step, largest first
 }
 

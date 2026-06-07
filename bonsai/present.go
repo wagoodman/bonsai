@@ -159,9 +159,10 @@ func (r *report) sections(an *Analysis) {
 
 func (r *report) largestModules(an *Analysis) {
 	r.heading("Largest modules by size",
-		"class is relative to code you control: 1st = yours, 2nd = direct dep of yours, 3rd = transitive")
-	rows := [][]string{}
-	var dim []bool
+		"class is relative to code you control; ← traces who imports it back to your 1st-class code")
+	if !r.md {
+		fmt.Fprintf(r.w, "  %s\n", r.pal.head(fmt.Sprintf("%9s  %5s  %-5s  %-8s  %s", "SIZE", "%BIN", "CLASS", "KIND", "MODULE")))
+	}
 	shown := 0
 	for _, m := range an.Modules {
 		if m.Module == an.MainModule {
@@ -170,13 +171,32 @@ func (r *report) largestModules(an *Analysis) {
 		if m.Ignored && an.HideIgnored {
 			continue
 		}
-		rows = append(rows, []string{humize(m.Size), pctStr(m.Size, an.AccountedSize), m.Class, kindLabel(m), m.Module})
-		dim = append(dim, m.Ignored)
+		r.moduleRow(m, an.AccountedSize)
+		whyPrefix := "               " // plain: indent under the row
+		if r.md {
+			whyPrefix = "  " // markdown: nest one list level under the module item
+		}
+		r.renderWhy(m.Why, whyPrefix)
 		if shown++; shown >= r.top {
 			break
 		}
 	}
-	r.table([]string{"SIZE", "%BIN", "CLASS", "KIND", "MODULE"}, rows, dim)
+	fmt.Fprintln(r.w)
+}
+
+// moduleRow prints one largest-modules entry as a fixed-width line (so its why tree can hang
+// beneath it), dimming locked modules.
+func (r *report) moduleRow(m ModuleSize, denom uint64) {
+	if r.md {
+		fmt.Fprintf(r.w, "- **%s** — %s · %s · class %s · %s\n",
+			m.Module, humize(m.Size), pctStr(m.Size, denom), m.Class, kindLabel(m))
+		return
+	}
+	row := fmt.Sprintf("%9s  %5s  %-5s  %-8s  %s", humize(m.Size), pctStr(m.Size, denom), m.Class, kindLabel(m), m.Module)
+	if m.Ignored {
+		row = r.pal.dim(row)
+	}
+	fmt.Fprintf(r.w, "  %s\n", row)
 }
 
 func (r *report) pruneCandidates(an *Analysis) {
@@ -292,6 +312,36 @@ func (r *report) planDeps(freed []FreedModule, prefix string) {
 			return
 		}
 		line(f.Bytes, r.depLabel(f))
+		// trace who imports this dragged-out dep back to your 1st-class code.
+		whyPrefix := prefix + "            " // plain: clear the byte column
+		if r.md {
+			whyPrefix = strings.TrimSuffix(prefix, "- ") + "  " // md: nest under the dep item
+		}
+		r.renderWhy(f.Why, whyPrefix)
+	}
+}
+
+// renderWhy prints a module's import-why tree as indented "← imported by (class)" branches,
+// tracing back to the 1st-class code that pulled it in. prefix is the indent for this level.
+func (r *report) renderWhy(node *ImportNode, prefix string) {
+	if node == nil {
+		return
+	}
+	for _, child := range node.Via {
+		if r.md {
+			fmt.Fprintf(r.w, "%s- ← %s (%s)\n", prefix, child.Module, child.Class)
+		} else {
+			fmt.Fprintf(r.w, "%s%s\n", prefix, r.pal.dim(fmt.Sprintf("← %s (%s)", child.Module, child.Class)))
+		}
+		r.renderWhy(child, prefix+"  ")
+	}
+	if node.More > 0 {
+		marker := fmt.Sprintf("← +%d more", node.More)
+		if r.md {
+			fmt.Fprintf(r.w, "%s- %s\n", prefix, marker)
+		} else {
+			fmt.Fprintf(r.w, "%s%s\n", prefix, r.pal.dim(marker))
+		}
 	}
 }
 
