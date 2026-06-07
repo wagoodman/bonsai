@@ -157,7 +157,22 @@ func (r *report) sections(an *Analysis) {
 	r.table([]string{"SIZE", "%BIN", "SECTION"}, rows, nil)
 }
 
+// largestModules ranks third-party modules by size. With import-why trees present (--why) it
+// renders each entry with its "← imported by" trace beneath; otherwise it keeps the compact
+// table.
 func (r *report) largestModules(an *Analysis) {
+	withWhy := false
+	for _, m := range an.Modules {
+		if m.Why != nil {
+			withWhy = true
+			break
+		}
+	}
+	if !withWhy {
+		r.largestModulesTable(an)
+		return
+	}
+
 	r.heading("Largest modules by size",
 		"class is relative to code you control; ← traces who imports it back to your 1st-class code")
 	if !r.md {
@@ -182,6 +197,29 @@ func (r *report) largestModules(an *Analysis) {
 		}
 	}
 	fmt.Fprintln(r.w)
+}
+
+// largestModulesTable is the compact ranked table shown when import-why traces are off.
+func (r *report) largestModulesTable(an *Analysis) {
+	r.heading("Largest modules by size",
+		"class is relative to code you control: 1st = yours, 2nd = direct dep of yours, 3rd = transitive (--why explains each)")
+	rows := [][]string{}
+	var dim []bool
+	shown := 0
+	for _, m := range an.Modules {
+		if m.Module == an.MainModule {
+			continue
+		}
+		if m.Ignored && an.HideIgnored {
+			continue
+		}
+		rows = append(rows, []string{humize(m.Size), pctStr(m.Size, an.AccountedSize), m.Class, kindLabel(m), m.Module})
+		dim = append(dim, m.Ignored)
+		if shown++; shown >= r.top {
+			break
+		}
+	}
+	r.table([]string{"SIZE", "%BIN", "CLASS", "KIND", "MODULE"}, rows, dim)
 }
 
 // moduleRow prints one largest-modules entry as a fixed-width line (so its why tree can hang

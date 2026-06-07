@@ -21,7 +21,7 @@ type Analysis struct {
 	Ignore      []string `yaml:"ignore" json:"ignore" mapstructure:"ignore"`
 	Unlock      []string `yaml:"unlock" json:"unlock" mapstructure:"unlock"`
 	Blame       bool     `yaml:"blame" json:"blame" mapstructure:"blame"`
-	NoWhy       bool     `yaml:"no-why" json:"no-why" mapstructure:"no-why"`
+	Why         bool     `yaml:"why" json:"why" mapstructure:"why"`
 	HideIgnored bool     `yaml:"hide-ignored" json:"hide-ignored" mapstructure:"hide-ignored"`
 	Top         int      `yaml:"top" json:"top" mapstructure:"top"`
 
@@ -50,8 +50,8 @@ func (o *Analysis) AddFlags(flags fangs.FlagSet) {
 		"re-open these locked modules as prune candidates (repeatable; overrides the default lock on controlled modules)")
 	flags.BoolVarP(&o.Blame, "blame", "",
 		"also compute Shapley fair-blame: each target's fair share of shared weight")
-	flags.BoolVarP(&o.NoWhy, "no-why", "",
-		"hide the import-why trees (the \"← imported by\" traces shown under modules)")
+	flags.BoolVarP(&o.Why, "why", "",
+		"show import-why trees: under each module, the \"← imported by\" trace back to your 1st-class code")
 	flags.BoolVarP(&o.HideIgnored, "hide-ignored", "",
 		"omit locked modules from output instead of de-emphasizing them")
 	flags.IntVarP(&o.Top, "top", "t",
@@ -75,7 +75,7 @@ func (o *Analysis) DescribeFields(d fangs.FieldDescriptionSet) {
 	d.Add(&o.Ignore, "module patterns never suggested for pruning, i.e. locked (exact, glob, or \"path/...\")")
 	d.Add(&o.Unlock, "locked modules to re-open as prune candidates (overrides the default lock on controlled modules)")
 	d.Add(&o.Blame, "also compute Shapley fair-blame attribution across prune targets")
-	d.Add(&o.NoWhy, "hide the import-why trees (the \"imported by\" traces shown under modules)")
+	d.Add(&o.Why, "show import-why trees: the \"imported by\" trace from each module back to your 1st-class code")
 	d.Add(&o.HideIgnored, "omit locked modules from output instead of de-emphasizing them")
 	d.Add(&o.Top, "maximum number of rows to show in each ranked table")
 }

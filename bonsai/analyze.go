@@ -40,7 +40,7 @@ type Config struct {
 
 	HideIgnored bool // omit locked modules from output entirely (default: show them de-emphasized)
 	Blame       bool // also compute Shapley fair-blame attribution (splits shared weight across targets)
-	NoWhy       bool // suppress the import-why trees (the "← imported by" traces); they're on by default
+	Why         bool // include the import-why trees (the "← imported by" traces); off by default
 }
 
 // ModuleSize is the aggregated size and metadata for one module in the binary.
@@ -147,7 +147,7 @@ func optsFrom(cfg Config) analyzeOpts {
 		unlock:      newPatternMatcher(cfg.Unlock),
 		hideIgnored: cfg.HideIgnored,
 		blame:       cfg.Blame,
-		why:         !cfg.NoWhy,
+		why:         cfg.Why,
 	}
 }
 

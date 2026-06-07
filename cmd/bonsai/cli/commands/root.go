@@ -86,7 +86,7 @@ func runAnalyze(opts *analyzeConfig) error {
 		Ignore:      opts.Ignore,
 		Unlock:      opts.Unlock,
 		Blame:       opts.Blame,
-		NoWhy:       opts.NoWhy,
+		Why:         opts.Why,
 		HideIgnored: opts.HideIgnored,
 	})
 	if err != nil {
