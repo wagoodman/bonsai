@@ -37,6 +37,22 @@ type buildGraph struct {
 	directMods   map[string]bool         // direct (non-indirect) module dependencies
 	allModules   map[string]*listModule  // module path -> module
 	rootPackages []string                // entrypoint packages (main)
+
+	// controlled is the set of 1st-class modules whose source we can edit — the modules
+	// whose outgoing imports are "cuttable" in the reachability model. It always contains
+	// the main module; classify() widens it from the user's controlled patterns. Reachability
+	// only severs edges that originate in a controlled module (see reachable).
+	controlled map[string]bool
+}
+
+// isControlled reports whether m is a 1st-class module (editable source). The main module
+// is always controlled. Before classify() runs, controlled is nil and only the main module
+// qualifies, which preserves the original "first-party = main module only" cut model.
+func (g *buildGraph) isControlled(m string) bool {
+	if m == g.mainModule {
+		return true
+	}
+	return g.controlled[m]
 }
 
 // loadBuildGraph runs `go list -deps -json <target>` in dir and assembles the graph.

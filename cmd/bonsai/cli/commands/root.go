@@ -82,7 +82,10 @@ func runAnalyze(opts *analyzeConfig) error {
 		Dir:         opts.Dir,
 		Target:      opts.Target,
 		Binary:      opts.Binary,
+		Controlled:  opts.Controlled,
 		Ignore:      opts.Ignore,
+		Unlock:      opts.Unlock,
+		Blame:       opts.Blame,
 		HideIgnored: opts.HideIgnored,
 	})
 	if err != nil {

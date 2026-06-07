@@ -78,7 +78,8 @@ func (r *report) write(an *Analysis) error {
 	r.sections(an)
 	r.largestModules(an)
 	r.pruneCandidates(an)
-	r.sharedModules(an)
+	r.prunePlan(an)
+	r.blame(an)
 	return nil
 }
 
@@ -157,7 +158,8 @@ func (r *report) sections(an *Analysis) {
 }
 
 func (r *report) largestModules(an *Analysis) {
-	r.heading("Largest modules by size", "")
+	r.heading("Largest modules by size",
+		"class is relative to code you control: 1st = yours, 2nd = direct dep of yours, 3rd = transitive")
 	rows := [][]string{}
 	var dim []bool
 	shown := 0
@@ -168,20 +170,13 @@ func (r *report) largestModules(an *Analysis) {
 		if m.Ignored && an.HideIgnored {
 			continue
 		}
-		kind := "indirect"
-		if m.Direct {
-			kind = "direct"
-		}
-		if m.Ignored {
-			kind = "ignored"
-		}
-		rows = append(rows, []string{humize(m.Size), pctStr(m.Size, an.AccountedSize), kind, m.Module})
+		rows = append(rows, []string{humize(m.Size), pctStr(m.Size, an.AccountedSize), m.Class, kindLabel(m), m.Module})
 		dim = append(dim, m.Ignored)
 		if shown++; shown >= r.top {
 			break
 		}
 	}
-	r.table([]string{"SIZE", "%BIN", "KIND", "MODULE"}, rows, dim)
+	r.table([]string{"SIZE", "%BIN", "CLASS", "KIND", "MODULE"}, rows, dim)
 }
 
 func (r *report) pruneCandidates(an *Analysis) {
@@ -194,48 +189,154 @@ func (r *report) pruneCandidates(an *Analysis) {
 	sort.Slice(prunable, func(i, j int) bool { return prunable[i].Prune.FreedBytes > prunable[j].Prune.FreedBytes })
 
 	r.heading("Prune candidates",
-		"drop a direct dep → bytes freed (own size + transitively-orphaned deps); coupling = how wired-in it is")
+		"EXCL = freed by pruning this alone; POT = freeable weight in its subtree; GET% = EXCL/POT (the rest is shared with other deps)")
+	if len(prunable) > 0 {
+		r.pruneHeadline(prunable[0])
+	}
 	rows := [][]string{}
 	for i, m := range prunable {
 		if i >= r.top {
 			break
 		}
+		p := m.Prune
 		c := coup(m)
 		rows = append(rows, []string{
-			r.pal.good(humize(m.Prune.FreedBytes)), humize(m.Size), itoa(len(m.Prune.FreedModules)),
-			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Module,
+			r.pal.good(humize(p.FreedBytes)), humize(p.PotentialBytes), getPct(p), itoa(len(p.FreedModules)),
+			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Class, m.Module,
 		})
 	}
-	r.table([]string{"FREED", "OWN", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "MODULE"}, rows, nil)
+	r.table([]string{"EXCL", "POT", "GET%", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "CLASS", "MODULE"}, rows, nil)
 }
 
-func (r *report) sharedModules(an *Analysis) {
-	shared := an.Shared
-	if an.HideIgnored {
-		shared = shared[:0:0]
-		for _, s := range an.Shared {
-			if !s.Ignored {
-				shared = append(shared, s)
-			}
-		}
+// pruneHeadline renders the one-line "biggest realistic win" sentence for the top prune
+// candidate, naming the shared weight that pruning it would NOT free and who holds it.
+func (r *report) pruneHeadline(m ModuleSize) {
+	p := m.Prune
+	line := fmt.Sprintf("best single win: prune %s → %s now", shortModule(m.Module), humize(p.FreedBytes))
+	if p.PotentialBytes > p.FreedBytes {
+		line += fmt.Sprintf(", %s of the %s freeable in its subtree", getPct(p), humize(p.PotentialBytes))
 	}
-
-	r.heading("Load-bearing / shared",
-		"pulled in by 2+ direct deps — structural weight no single prune removes (good ignore-list candidates)")
-	if len(shared) == 0 {
-		fmt.Fprintf(r.w, "  %s\n\n", r.pal.dim("none — every freeable module is exclusive to one direct dep"))
+	if p.SharedBytes > 0 {
+		extra := ""
+		if len(p.SharedWith) > 0 && len(p.SharedWith[0].AlsoVia) > 0 {
+			extra = " — co-prune " + joinShort(p.SharedWith[0].AlsoVia, 3) + " to free it"
+		}
+		line += fmt.Sprintf(" (%s shared%s)", humize(p.SharedBytes), extra)
+	}
+	if r.md {
+		fmt.Fprintf(r.w, "_%s_\n\n", line)
 		return
 	}
-	rows := [][]string{}
-	var dim []bool
-	for i, s := range shared {
+	fmt.Fprintf(r.w, "  %s\n\n", r.pal.good(line))
+}
+
+func (r *report) prunePlan(an *Analysis) {
+	if len(an.Plan) == 0 {
+		return
+	}
+	r.heading("Prune plan (greedy order)",
+		"each step frees extra bytes after the earlier prunes; the breakdown shows the dep's own code vs the deps it drags out")
+	for i, s := range an.Plan {
 		if i >= r.top {
 			break
 		}
-		rows = append(rows, []string{humize(s.Bytes), fmt.Sprintf("%d deps", s.SharedBy), s.Module})
-		dim = append(dim, s.Ignored)
+		r.planStep(i+1, s)
 	}
-	r.table([]string{"SIZE", "SHARED-BY", "MODULE"}, rows, dim)
+}
+
+// planStep renders one plan step with its own-vs-dragged-in breakdown: it answers whether a
+// prune's payoff is the module's own code or the dependencies it pulls out of the build.
+func (r *report) planStep(n int, s PrunePlanStep) {
+	dragged := s.Marginal - s.OwnBytes
+
+	if r.md {
+		fmt.Fprintf(r.w, "%d. **%s**%s — +%s freed (cumulative %s)\n",
+			n, s.Module, importerNote(s.Importers), humize(s.Marginal), humize(s.Cumulative))
+		fmt.Fprintf(r.w, "    - own code: %s (%s)\n", humize(s.OwnBytes), pctStr(s.OwnBytes, s.Marginal))
+		fmt.Fprintf(r.w, "    - drags out: %s (%s)\n", humize(dragged), pctStr(dragged, s.Marginal))
+		r.planDeps(s.Freed, "        - ")
+		fmt.Fprintln(r.w)
+		return
+	}
+
+	fmt.Fprintf(r.w, "  %s  %s  %s  %s%s\n",
+		r.pal.strong(fmt.Sprintf("%d.", n)),
+		r.pal.good(fmt.Sprintf("+%s", humize(s.Marginal))),
+		r.pal.dim(fmt.Sprintf("(cumulative %s)", humize(s.Cumulative))),
+		r.pal.strong(s.Module),
+		r.pal.dim(importerNote(s.Importers)))
+	fmt.Fprintf(r.w, "       own code   %9s  %s\n", humize(s.OwnBytes), r.pal.dim(pctStr(s.OwnBytes, s.Marginal)))
+	fmt.Fprintf(r.w, "       drags out  %9s  %s\n", humize(dragged), r.pal.dim(pctStr(dragged, s.Marginal)))
+	r.planDeps(s.Freed, "         ")
+	fmt.Fprintln(r.w)
+}
+
+// planDeps lists the orphaned dependency modules under a step. It shows every one by default,
+// honoring the same --top limit as the rest of the report (default 40) only as a safety valve
+// against a pathologically wide step; the overflow collapses into a "+N more" line.
+func (r *report) planDeps(freed []FreedModule, prefix string) {
+	line := func(b uint64, label string) {
+		if r.md {
+			fmt.Fprintf(r.w, "%s%s — %s\n", prefix, label, humize(b))
+			return
+		}
+		fmt.Fprintf(r.w, "%s%9s  %s\n", prefix, humize(b), label)
+	}
+	for i, f := range freed {
+		if i >= r.top {
+			var rest uint64
+			for _, g := range freed[r.top:] {
+				rest += g.Bytes
+			}
+			line(rest, r.pal.dim(fmt.Sprintf("+%d more", len(freed)-r.top)))
+			return
+		}
+		line(f.Bytes, r.depLabel(f))
+	}
+}
+
+// depLabel renders a freed unit's name: a "(std)" tag for standard-library packages (so e.g.
+// pruning x/tools reads as the go/types toolchain, not a mystery "stdlib"), plus how many
+// other modules import it — the fan-in that says how shared/load-bearing it is.
+func (r *report) depLabel(f FreedModule) string {
+	label := f.Module
+	if f.Std {
+		label += " (std)"
+	}
+	return label + r.pal.dim(importerNote(f.Importers))
+}
+
+// importerNote formats a module's fan-in for inline annotation, or "" when there's nothing
+// useful to say (no other module imports it).
+func importerNote(importers int) string {
+	switch {
+	case importers <= 0:
+		return ""
+	case importers == 1:
+		return "  (imported by 1 module)"
+	default:
+		return fmt.Sprintf("  (imported by %d modules)", importers)
+	}
+}
+
+func (r *report) blame(an *Analysis) {
+	if len(an.Blame) == 0 {
+		return
+	}
+	how := "sampled"
+	if an.Blame[0].Exact {
+		how = "exact"
+	}
+	r.heading("Fair-blame (Shapley)",
+		fmt.Sprintf("each target's fair share of the total prunable weight, %s — shared deps are split across the targets that hold them", how))
+	rows := [][]string{}
+	for i, b := range an.Blame {
+		if i >= r.top {
+			break
+		}
+		rows = append(rows, []string{humize(b.Blame), b.Module})
+	}
+	r.table([]string{"BLAME", "MODULE"}, rows, nil)
 }
 
 // table renders a titled table. In markdown mode it emits a pipe table; otherwise a
@@ -312,6 +413,39 @@ func coup(m ModuleSize) *Coupling {
 		return m.Coupling
 	}
 	return &Coupling{}
+}
+
+// kindLabel describes a module's relationship to the build: locked deps (never pruned) win
+// over the direct/indirect distinction since that is what gates a prune suggestion.
+func kindLabel(m ModuleSize) string {
+	switch {
+	case m.Ignored:
+		return "locked"
+	case m.Direct:
+		return "direct"
+	default:
+		return "indirect"
+	}
+}
+
+// getPct renders the share of a target's subtree that pruning it actually frees (EXCL/POT).
+func getPct(p *PruneResult) string {
+	if p.PotentialBytes == 0 {
+		return "-"
+	}
+	return pctStr(p.FreedBytes, p.PotentialBytes)
+}
+
+// joinShort renders up to n short module names, collapsing the overflow into "+k more".
+func joinShort(modules []string, n int) string {
+	short := make([]string, 0, len(modules))
+	for _, m := range modules {
+		short = append(short, shortModule(m))
+	}
+	if len(short) <= n {
+		return strings.Join(short, ", ")
+	}
+	return strings.Join(short[:n], ", ") + fmt.Sprintf(" +%d more", len(short)-n)
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }

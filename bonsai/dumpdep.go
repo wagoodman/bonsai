@@ -62,7 +62,15 @@ func readReferenceEdges(g *buildGraph, r io.Reader) (int, error) {
 		}
 		// only edges between packages the build graph knows about; everything else is
 		// runtime/compiler scaffolding we can't attribute to a module.
-		if g.packages[from] == nil || g.packages[to] == nil {
+		fromPkg, toPkg := g.packages[from], g.packages[to]
+		if fromPkg == nil || toPkg == nil {
+			continue
+		}
+		// a standard-library package cannot import a third-party module in real source; such
+		// an edge is a symbol-attribution artifact (e.g. a generic instantiated with an
+		// external type whose symbol is named for the stdlib package that defines the generic).
+		// Keeping it would falsely pin the external module as always-reachable, so drop it.
+		if fromPkg.Standard && !toPkg.Standard {
 			continue
 		}
 		add(from, to)

@@ -1,25 +1,17 @@
 package bonsai
 
-import (
-	"sort"
-	"strings"
-)
+import "sort"
 
-// PruneAction is one actionable group: dropping first-party imports of every direct
-// dependency in Deps frees the listed modules (and StdBytes of standard-library code).
-// A single-element Deps is a plain "drop this dep" win; a multi-element Deps is a
-// co-prune — those modules stay until ALL the listed deps are dropped, because each one
-// independently pulls them in.
-type PruneAction struct {
-	Deps     []string      `json:"deps"`
-	Bytes    uint64        `json:"bytes"` // total freed (modules + std)
-	Modules  []FreedModule `json:"modules"`
-	StdBytes uint64        `json:"stdBytes"`
-}
-
+// FreedModule is a unit of freed weight. Module is a module path, or — when Std is true — a
+// standard-library package import path (stdlib has no module, so the package is the natural
+// unit for "which stdlib did this dependency switch on"). Importers is how many distinct
+// modules across the whole build directly import this unit — its fan-in, a quick read on how
+// shared (load-bearing) it is without cross-referencing the shared table.
 type FreedModule struct {
-	Module string `json:"module"`
-	Bytes  uint64 `json:"bytes"`
+	Module    string `json:"module"`
+	Bytes     uint64 `json:"bytes"`
+	Std       bool   `json:"std,omitempty"`
+	Importers int    `json:"importers,omitempty"`
 }
 
 // reachableFromModule returns every package reachable by following imports from the
@@ -50,32 +42,29 @@ func (g *buildGraph) reachableFromModule(m string) map[string]bool {
 	return seen
 }
 
-// blockerSets returns, for each freeable package, the set of droppable direct deps whose
-// subtree reaches it — i.e. the deps that must all be dropped for the package to leave the
-// binary. Ignored deps are treated as permanent: they are excluded as blockers, and any
-// package reachable only through them is "kept regardless" and never appears here.
-func (g *buildGraph) blockerSets(ignore ignoreMatcher) map[string][]string {
+// blockerSets returns, for each freeable package, the set of prune targets whose subtree
+// reaches it — i.e. the targets that must all be dropped for the package to leave the
+// binary. Locked deps are treated as permanent: they are excluded as blockers, and any
+// package reachable only through them (or through std / controlled code) is "kept
+// regardless" and never appears here.
+func (g *buildGraph) blockerSets(c *classification) map[string][]string {
 	base := g.reachable(nil)
 
-	// droppable direct deps: every direct dependency the user hasn't pinned via ignore.
-	droppable := make([]string, 0, len(g.directMods))
+	// every prune target is droppable; cutting all of them at once leaves only the
+	// kept-regardless backbone.
+	droppable := c.targets()
 	cut := map[string]bool{}
-	for m := range g.directMods {
-		if ignore.match(m) {
-			continue
-		}
-		droppable = append(droppable, m)
+	for _, m := range droppable {
 		cut[m] = true
 	}
-	sort.Strings(droppable)
 
-	// packages still reachable when first-party imports none of the droppable deps are
-	// "kept regardless" (reached via std, first-party, or an ignored dep) and can never be
-	// pruned away.
+	// packages still reachable when controlled code imports none of the droppable targets
+	// are "kept regardless" (reached via std, controlled code, or a locked dep) and can
+	// never be pruned away.
 	keptRegardless := g.reachable(cut)
 
-	// blockers[pkg] = droppable deps whose subtree reaches pkg (built one dep at a time to
-	// avoid holding many reachability sets at once).
+	// blockers[pkg] = droppable targets whose subtree reaches pkg (built one target at a
+	// time to avoid holding many reachability sets at once).
 	blockers := map[string][]string{}
 	for _, m := range droppable {
 		for pkg := range g.reachableFromModule(m) {
@@ -87,95 +76,98 @@ func (g *buildGraph) blockerSets(ignore ignoreMatcher) map[string][]string {
 	return blockers
 }
 
-// sharedModules reports dependencies pulled into the binary through more than one droppable
-// direct dep — load-bearing weight that no single prune removes. SharedBy is the number of
-// distinct direct deps whose subtrees reach the module. Modules reachable through a single
-// dep are exclusive prune candidates (covered by the prune table) and excluded here.
-func (g *buildGraph) sharedModules(selfSize map[string]uint64, ignore ignoreMatcher) []SharedModule {
-	blockers := g.blockerSets(ignore)
+// pruneResults builds, for every prune target, the realistic savings breakdown: exclusive
+// bytes (from the dominator tree — what pruning this target alone frees), the full subtree
+// potential, and the shared remainder enumerated by holder. blockers (from blockerSets)
+// names the other targets that keep each shared package alive.
+func (g *buildGraph) pruneResults(selfSize map[string]uint64, base map[string]bool, c *classification,
+	dom *domModel, blockers map[string][]string) map[string]*PruneResult {
 
-	bytes := map[string]uint64{}
-	deps := map[string]map[string]bool{}
-	for pkg, bl := range blockers {
-		mod := g.moduleOfPkg[pkg]
-		if mod == "" {
-			continue // standard library has no module to attribute shared weight to
-		}
-		bytes[mod] += selfSize[pkg]
-		if deps[mod] == nil {
-			deps[mod] = map[string]bool{}
-		}
-		for _, d := range bl {
-			deps[mod][d] = true
+	// total reachable package count per module, to decide which modules are fully freed.
+	totalByModule := map[string]int{}
+	for ip := range base {
+		if mod := g.moduleOfPkg[ip]; mod != "" {
+			totalByModule[mod]++
 		}
 	}
 
-	var out []SharedModule
-	for mod, ds := range deps {
-		if len(ds) < 2 {
-			continue // single-dep modules are exclusive prune candidates, not shared weight
+	// freeable packages are exactly the keys of blockers: reachable, but only via prune
+	// targets (not via the always-present backbone of controlled code, locked deps, and the
+	// shared standard library). Potential is measured against this set so it reflects weight
+	// that can actually be clawed back, not the entire transitive closure into std.
+	freeable := make(map[string]bool, len(blockers))
+	for pkg := range blockers {
+		freeable[pkg] = true
+	}
+
+	out := map[string]*PruneResult{}
+	for _, target := range c.targets() {
+		res := &PruneResult{Module: target, FreedBytes: dom.exclusiveBytes(target)}
+
+		// exclusive set: packages that actually leave when this target is pruned.
+		exclusive := map[string]bool{}
+		freedByModule := map[string]int{}
+		for _, ip := range dom.exclusivePkgs(target) {
+			exclusive[ip] = true
+			res.FreedPackages++
+			if mod := g.moduleOfPkg[ip]; mod != "" {
+				freedByModule[mod]++
+			}
 		}
-		out = append(out, SharedModule{
-			Module:   mod,
-			Bytes:    bytes[mod],
-			SharedBy: len(ds),
-			Ignored:  ignore.match(mod),
+		for mod, freed := range freedByModule {
+			if freed == totalByModule[mod] {
+				res.FreedModules = append(res.FreedModules, mod)
+			}
+		}
+		sort.Strings(res.FreedModules)
+
+		// potential: the freeable weight in this target's subtree — what could be clawed back
+		// if this target and everything sharing its subtree were all pruned together.
+		sharedBytes := map[string]uint64{}
+		sharedVia := map[string]map[string]bool{}
+		for ip := range g.reachableFromModule(target) {
+			if !freeable[ip] {
+				continue
+			}
+			res.PotentialBytes += selfSize[ip]
+			if exclusive[ip] {
+				continue
+			}
+			// shared: stays because another target reaches it too.
+			mod := g.moduleOfPkg[ip]
+			if mod == "" {
+				mod = "std" // standard-library weight has no module; bucket it together
+			}
+			sharedBytes[mod] += selfSize[ip]
+			if sharedVia[mod] == nil {
+				sharedVia[mod] = map[string]bool{}
+			}
+			for _, b := range blockers[ip] {
+				if b != target {
+					sharedVia[mod][b] = true
+				}
+			}
+		}
+		res.SharedBytes = res.PotentialBytes - res.FreedBytes
+
+		for mod, b := range sharedBytes {
+			if b == 0 {
+				continue
+			}
+			via := make([]string, 0, len(sharedVia[mod]))
+			for t := range sharedVia[mod] {
+				via = append(via, t)
+			}
+			sort.Strings(via)
+			res.SharedWith = append(res.SharedWith, SharedHolder{Module: mod, Bytes: b, AlsoVia: via})
+		}
+		sort.Slice(res.SharedWith, func(i, j int) bool {
+			if res.SharedWith[i].Bytes != res.SharedWith[j].Bytes {
+				return res.SharedWith[i].Bytes > res.SharedWith[j].Bytes
+			}
+			return res.SharedWith[i].Module < res.SharedWith[j].Module
 		})
+		out[target] = res
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Bytes != out[j].Bytes {
-			return out[i].Bytes > out[j].Bytes
-		}
-		return out[i].Module < out[j].Module
-	})
 	return out
-}
-
-// pruneActions groups freeable packages by their blocker set — the set of direct deps
-// that must all be dropped for the package to leave the binary — and reports the bytes
-// freed per group. Single-dep groups are exclusive wins; multi-dep groups are co-prunes.
-func (g *buildGraph) pruneActions(selfSize map[string]uint64, ignore ignoreMatcher) []PruneAction {
-	blockers := g.blockerSets(ignore)
-
-	type group struct {
-		deps     []string
-		modBytes map[string]uint64
-		std      uint64
-		total    uint64
-	}
-	groups := map[string]*group{}
-	for pkg, deps := range blockers {
-		sort.Strings(deps)
-		key := strings.Join(deps, "\x00")
-		gp := groups[key]
-		if gp == nil {
-			gp = &group{deps: deps, modBytes: map[string]uint64{}}
-			groups[key] = gp
-		}
-		sz := selfSize[pkg]
-		gp.total += sz
-		if mod := g.moduleOfPkg[pkg]; mod != "" {
-			gp.modBytes[mod] += sz
-		} else {
-			gp.std += sz
-		}
-	}
-
-	actions := make([]PruneAction, 0, len(groups))
-	for _, gp := range groups {
-		a := PruneAction{Deps: gp.deps, Bytes: gp.total, StdBytes: gp.std}
-		for mod, b := range gp.modBytes {
-			a.Modules = append(a.Modules, FreedModule{Module: mod, Bytes: b})
-		}
-		sort.Slice(a.Modules, func(i, j int) bool { return a.Modules[i].Bytes > a.Modules[j].Bytes })
-		actions = append(actions, a)
-	}
-	// fewest deps first (cheapest actions), then biggest savings.
-	sort.Slice(actions, func(i, j int) bool {
-		if len(actions[i].Deps) != len(actions[j].Deps) {
-			return len(actions[i].Deps) < len(actions[j].Deps)
-		}
-		return actions[i].Bytes > actions[j].Bytes
-	})
-	return actions
 }

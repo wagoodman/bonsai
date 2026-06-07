@@ -19,11 +19,27 @@ import (
 // switches to fallback mode: analyze a prebuilt binary, resolving its source for the build
 // graph (no build, no dumpdep — reachability falls back to source-level imports).
 type Config struct {
-	Dir         string   // module directory to build/analyze (default: current directory)
-	Target      string   // build target package (default: the module's sole main package)
-	Binary      string   // analyze this prebuilt binary instead of building from source (fallback mode)
-	Ignore      []string // module patterns never suggested for pruning (exact, glob, or "path/...")
-	HideIgnored bool     // omit ignored modules from output entirely (default: show them de-emphasized)
+	Dir    string // module directory to build/analyze (default: current directory)
+	Target string // build target package (default: the module's sole main package)
+	Binary string // analyze this prebuilt binary instead of building from source (fallback mode)
+
+	// Controlled lists the 1st-class modules whose source the user can edit — the modules
+	// whose imports are "cuttable". The main module is always controlled. Widening this
+	// beyond the main module lets bonsai reason about pruning a dependency from a module you
+	// own but didn't author (e.g. stereoscope dropping go-containerregistry). Patterns are
+	// exact paths, "path/..." subtrees, or globs.
+	Controlled []string
+	// Locked lists modules never proposed for pruning. Every controlled module is locked by
+	// default (you keep what you own); add load-bearing deps you will always carry. Ignore is
+	// a deprecated alias merged into Locked.
+	Locked []string
+	Ignore []string
+	// Unlock re-opens specific locked modules (including controlled ones) as prune candidates,
+	// overriding the default lock on controlled modules.
+	Unlock []string
+
+	HideIgnored bool // omit locked modules from output entirely (default: show them de-emphasized)
+	Blame       bool // also compute Shapley fair-blame attribution (splits shared weight across targets)
 }
 
 // ModuleSize is the aggregated size and metadata for one module in the binary.
@@ -31,40 +47,31 @@ type ModuleSize struct {
 	Module   string       `json:"module"`
 	Size     uint64       `json:"size"`
 	Direct   bool         `json:"direct"`
+	Class    string       `json:"class"` // "main", "1st", "2nd", or "3rd" relative to controlled code
 	InBuild  bool         `json:"inBuild"`
-	Ignored  bool         `json:"ignored,omitempty"` // on the user's never-prune list
+	Ignored  bool         `json:"ignored,omitempty"` // locked: on the never-prune list
 	Prune    *PruneResult `json:"prune,omitempty"`
 	Coupling *Coupling    `json:"coupling,omitempty"`
-}
-
-// SharedModule is a dependency pulled into the binary by more than one direct dep — shared,
-// load-bearing weight that no single prune can remove. SharedBy counts the distinct direct
-// dependencies whose subtree reaches it; higher means more structural.
-type SharedModule struct {
-	Module   string `json:"module"`
-	Bytes    uint64 `json:"bytes"`
-	SharedBy int    `json:"sharedBy"`
-	Ignored  bool   `json:"ignored,omitempty"`
 }
 
 // Analysis is the complete result of attributing a binary's size to its modules and
 // estimating the cost/benefit of pruning each direct dependency.
 type Analysis struct {
-	BinarySize    uint64         `json:"binarySize"`    // analyzed file size on disk
-	AccountedSize uint64         `json:"accountedSize"` // file-backed, non-debug sections (~ stripped binary size)
-	CodeSize      uint64         `json:"codeSize"`      // executable code
-	DataSize      uint64         `json:"dataSize"`      // named data (rodata/data globals)
-	PclntabSize   uint64         `json:"pclntabSize"`   // gopclntab metadata (distributed proportionally)
-	StdSize       uint64         `json:"stdSize"`       // standard library
-	MainSize      uint64         `json:"mainSize"`      // main module
-	MainModule    string         `json:"mainModule"`
-	GeneratedSize uint64         `json:"generatedSize"` // compiler-generated + anonymous (pooled constants, type metadata)
-	Stripped      bool           `json:"stripped"`      // true if only code could be attributed
-	Sections      []SectionInfo  `json:"sections"`
-	Modules       []ModuleSize   `json:"modules"`
-	Shared        []SharedModule `json:"shared"` // load-bearing deps pulled in by 2+ direct deps
-	Actions       []PruneAction  `json:"pruneActions"`
-	HideIgnored   bool           `json:"-"` // presentation: drop ignored modules instead of dimming them
+	BinarySize    uint64          `json:"binarySize"`    // analyzed file size on disk
+	AccountedSize uint64          `json:"accountedSize"` // file-backed, non-debug sections (~ stripped binary size)
+	CodeSize      uint64          `json:"codeSize"`      // executable code
+	DataSize      uint64          `json:"dataSize"`      // named data (rodata/data globals)
+	PclntabSize   uint64          `json:"pclntabSize"`   // gopclntab metadata (distributed proportionally)
+	StdSize       uint64          `json:"stdSize"`       // standard library
+	MainSize      uint64          `json:"mainSize"`      // main module
+	MainModule    string          `json:"mainModule"`
+	GeneratedSize uint64          `json:"generatedSize"` // compiler-generated + anonymous (pooled constants, type metadata)
+	Stripped      bool            `json:"stripped"`      // true if only code could be attributed
+	Sections      []SectionInfo   `json:"sections"`
+	Modules       []ModuleSize    `json:"modules"`
+	Plan          []PrunePlanStep `json:"prunePlan,omitempty"` // greedy ordered prune plan (marginal savings)
+	Blame         []ModuleBlame   `json:"blame,omitempty"`     // Shapley fair-blame per target (opt-in)
+	HideIgnored   bool            `json:"-"`                   // presentation: drop ignored modules instead of dimming them
 }
 
 // Analyze resolves the build graph for the configured module (or prebuilt binary) and
@@ -128,18 +135,26 @@ func analyzeFromSource(cfg Config) (*Analysis, error) {
 	return analyze(bin, g, optsFrom(cfg)), nil
 }
 
-// optsFrom derives the internal analysis options (ignore handling) from the public Config.
+// optsFrom derives the internal analysis options (classification inputs) from the public
+// Config. The deprecated Ignore list is merged into Locked.
 func optsFrom(cfg Config) analyzeOpts {
+	locked := append(append([]string(nil), cfg.Locked...), cfg.Ignore...)
 	return analyzeOpts{
-		ignore:      newIgnoreMatcher(cfg.Ignore),
+		controlled:  newPatternMatcher(cfg.Controlled),
+		locked:      newPatternMatcher(locked),
+		unlock:      newPatternMatcher(cfg.Unlock),
 		hideIgnored: cfg.HideIgnored,
+		blame:       cfg.Blame,
 	}
 }
 
 // analyzeOpts carries the non-binary inputs that shape the joined analysis.
 type analyzeOpts struct {
-	ignore      ignoreMatcher
+	controlled  patternMatcher
+	locked      patternMatcher
+	unlock      patternMatcher
 	hideIgnored bool
+	blame       bool
 }
 
 // analyzePrebuilt is the fallback path: analyze a binary the user already built. We locate
@@ -211,7 +226,14 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 	}
 
 	attrTask := startTask("Attribute size", "attributing size", "size attributed")
+	// classify modules (sets g.controlled, so reachability severs the right edges) before any
+	// reachability work, then build the dominator model that drives realistic prune savings.
+	cls := classify(g, opts.controlled, opts.locked, opts.unlock)
 	baseReachable := g.reachable(nil)
+	dom := g.buildDomModel(bin.SelfSize, baseReachable, cls)
+	blockers := g.blockerSets(cls)
+	prunes := g.pruneResults(bin.SelfSize, baseReachable, cls, dom, blockers)
+
 	// coupling needs the main module source tree; skip it when analyzing a prebuilt binary
 	// whose source we couldn't locate.
 	var coup map[string]*Coupling
@@ -220,32 +242,36 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 	}
 
 	for mod, sz := range bySize {
-		ignored := opts.ignore.match(mod)
 		ms := ModuleSize{
 			Module:  mod,
 			Size:    sz,
 			Direct:  g.directMods[mod],
+			Class:   cls.classOf(mod).String(),
 			InBuild: true,
-			Ignored: ignored,
+			Ignored: cls.isLocked(mod),
 		}
 		if mod != g.mainModule {
 			ms.Coupling = coup[mod]
 		}
-		// only offer a prune estimate for droppable direct deps; ignored deps are core and
-		// never suggested for removal.
-		if g.directMods[mod] && !ignored {
-			p := g.treeShake(mod, bin.SelfSize, baseReachable)
-			ms.Prune = &p
+		// a prune estimate is offered only for prune targets (non-locked deps reachable by a
+		// cuttable hop out of controlled code); locked deps are core and never suggested.
+		if p := prunes[mod]; p != nil {
+			ms.Prune = p
 		}
 		an.Modules = append(an.Modules, ms)
 	}
 	sort.Slice(an.Modules, func(i, j int) bool { return an.Modules[i].Size > an.Modules[j].Size })
 	attrTask.SetCompleted()
 
-	actionTask := startTask("Compute prune actions", "computing prune actions", "prune actions computed")
-	an.Actions = g.pruneActions(bin.SelfSize, opts.ignore)
-	an.Shared = g.sharedModules(bin.SelfSize, opts.ignore)
-	actionTask.SetCompleted()
+	planTask := startTask("Compute prune plan", "computing prune plan", "prune plan computed")
+	an.Plan = g.greedyPlan(bin.SelfSize, baseReachable, cls)
+	planTask.SetCompleted()
+
+	if opts.blame {
+		blameTask := startTask("Compute blame", "computing fair-blame attribution", "blame computed")
+		an.Blame = g.shapleyBlame(bin.SelfSize, baseReachable, cls)
+		blameTask.SetCompleted()
+	}
 
 	return an
 }

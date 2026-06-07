@@ -19,12 +19,14 @@ func sampleAnalysis() *Analysis {
 		MainSize:      120,
 		Sections:      []SectionInfo{{Name: ".text", Size: 600}},
 		Modules: []ModuleSize{
-			{Module: "github.com/example/dep", Size: 400, Direct: true,
-				Prune: &PruneResult{FreedBytes: 400, FreedModules: []string{"x"}}},
-			{Module: "github.com/core/keep", Size: 300, Direct: true, Ignored: true},
+			{Module: "github.com/example/dep", Size: 400, Direct: true, Class: "2nd",
+				Prune: &PruneResult{FreedBytes: 320, FreedModules: []string{"x"}, PotentialBytes: 400, SharedBytes: 80,
+					SharedWith: []SharedHolder{{Module: "github.com/shared/lib", Bytes: 80, AlsoVia: []string{"github.com/example/other"}}}}},
+			{Module: "github.com/core/keep", Size: 300, Direct: true, Class: "1st", Ignored: true},
 		},
-		Shared: []SharedModule{
-			{Module: "github.com/shared/lib", Bytes: 250, SharedBy: 3},
+		Plan: []PrunePlanStep{
+			{Module: "github.com/example/dep", Marginal: 320, Cumulative: 320,
+				OwnBytes: 320, Importers: 1},
 		},
 	}
 }
@@ -47,7 +49,7 @@ func TestWriteTableColor(t *testing.T) {
 			assert.Equal(t, tt.wantANSI, strings.Contains(out, "\x1b["), "ANSI presence")
 			// the data is always present regardless of color.
 			assert.Contains(t, stripANSI(out), "github.com/example/dep")
-			assert.Contains(t, stripANSI(out), "Load-bearing")
+			assert.Contains(t, stripANSI(out), "Prune plan")
 		})
 	}
 }
@@ -62,11 +64,11 @@ func TestWriteTableHideIgnored(t *testing.T) {
 	an.HideIgnored = false
 	var b2 strings.Builder
 	require.NoError(t, WriteTable(&b2, an, 40, false))
-	assert.Contains(t, b2.String(), "github.com/core/keep", "ignored module should be shown when not hidden")
-	assert.Contains(t, b2.String(), "ignored", "ignored kind label")
+	assert.Contains(t, b2.String(), "github.com/core/keep", "locked module should be shown when not hidden")
+	assert.Contains(t, b2.String(), "locked", "locked kind label")
 }
 
-func TestIgnoreMatcher(t *testing.T) {
+func TestPatternMatcher(t *testing.T) {
 	tests := []struct {
 		name     string
 		patterns []string
@@ -86,7 +88,7 @@ func TestIgnoreMatcher(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, newIgnoreMatcher(tt.patterns).match(tt.module))
+			assert.Equal(t, tt.want, newPatternMatcher(tt.patterns).match(tt.module))
 		})
 	}
 }
