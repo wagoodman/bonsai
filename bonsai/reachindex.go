@@ -176,6 +176,21 @@ func (ri *reachIndex) freedBytes(cut []bool) uint64 {
 	return ri.total - ri.sweep(cut)
 }
 
+// reachedModules returns the set of modules with at least one package still reachable under
+// cut — i.e. the modules that survive the selection. Used to tell which deps actually leave.
+func (ri *reachIndex) reachedModules(cut []bool) map[string]bool {
+	ri.sweep(cut)
+	out := map[string]bool{}
+	for n := range ri.size {
+		if ri.seen[n] == ri.gen {
+			if mod := ri.mod[n]; mod != "" {
+				out[mod] = true
+			}
+		}
+	}
+	return out
+}
+
 // freedKey identifies a bucket in a freed-weight breakdown: a third-party module, or a
 // standard-library package (std has no module, so the package is the meaningful unit — it is
 // what reveals "x/tools dragged in go/types", not just "some stdlib").
@@ -266,22 +281,28 @@ func (g *buildGraph) greedyPlan(selfSize map[string]uint64, base map[string]bool
 		// drags out of the build with it.
 		targetMod := ri.targets[best]
 		afterFreed := ri.freedBreakdown(chosen)
+		marginal := map[freedKey]uint64{}
+		for k, after := range afterFreed {
+			if delta := after - prevFreed[k]; delta > 0 { // monotonic: more cuts never un-frees
+				marginal[k] = delta
+			}
+		}
+		coPrune := ri.coPruneFor(chosen, best, marginal)
+
 		step := PrunePlanStep{
 			Module:     targetMod,
 			Marginal:   bestFreed - prev,
 			Cumulative: bestFreed,
 			Importers:  ri.importers[freedKey{name: targetMod}],
 		}
-		for k, after := range afterFreed {
-			delta := after - prevFreed[k] // monotonic: more cuts never un-frees
-			if delta == 0 {
-				continue
-			}
+		for k, delta := range marginal {
 			if !k.std && k.name == targetMod {
 				step.OwnBytes = delta
 				continue
 			}
-			step.Freed = append(step.Freed, FreedModule{Module: k.name, Bytes: delta, Std: k.std, Importers: ri.importers[k]})
+			step.Freed = append(step.Freed, FreedModule{
+				Module: k.name, Bytes: delta, Std: k.std, Importers: ri.importers[k], CoPrune: coPrune[k],
+			})
 		}
 		sort.Slice(step.Freed, func(i, j int) bool {
 			if step.Freed[i].Bytes != step.Freed[j].Bytes {
@@ -295,6 +316,54 @@ func (g *buildGraph) greedyPlan(selfSize map[string]uint64, base map[string]bool
 	}
 	return steps
 }
+
+// coPruneFor computes, for each marginal unit, the OTHER prune targets (besides best) that
+// must also be cut to free it — using the real cut machinery, not forward reachability. A
+// unit freed by cutting best alone has no co-prune (empty); a unit that only leaves once
+// several targets are gone names the others it genuinely needs. This is what makes "prune
+// go-getter → 10.6 MB" read as a single clean action: items reached only *through* go-getter
+// are freed by cutting go-getter, so they carry no spurious "also prune X".
+func (ri *reachIndex) coPruneFor(chosen []bool, best int, marginal map[freedKey]uint64) map[freedKey][]string {
+	out := map[freedKey][]string{}
+
+	// fast path: whatever best frees on its own needs no co-prune. For the first step (and any
+	// exclusively-held item) this covers everything, so no extra sweeps run.
+	soloCut := make([]bool, len(chosen))
+	soloCut[best] = true
+	soloFreed := ri.freedBreakdown(soloCut)
+	var shared []freedKey
+	for k := range marginal {
+		if _, freedAlone := soloFreed[k]; !freedAlone {
+			shared = append(shared, k)
+		}
+	}
+	if len(shared) == 0 {
+		return out
+	}
+
+	// for genuinely shared units, a target is necessary iff un-cutting it lets the unit back
+	// in — that is the real co-prune requirement.
+	for tid := range chosen {
+		if !chosen[tid] || tid == best {
+			continue
+		}
+		chosen[tid] = false
+		without := ri.freedBreakdown(chosen)
+		chosen[tid] = true
+		for _, k := range shared {
+			if _, stillFreed := without[k]; !stillFreed {
+				out[k] = append(out[k], ri.targets[tid])
+			}
+		}
+	}
+	for k := range out {
+		sort.Strings(out[k])
+	}
+	return out
+}
+
+// allTargetIDs returns a fresh slice of every target id, used by callers that permute or
+// enumerate the full target set.
 
 // allTargetIDs returns a fresh slice of every target id, used by callers that permute or
 // enumerate the full target set.

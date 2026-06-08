@@ -53,11 +53,41 @@ func (g *buildGraph) moduleImporters(base map[string]bool) map[string]map[string
 	return imp
 }
 
-// importWhy builds the why tree for module m: a reverse breadth-first walk over importers that
-// terminates at 1st-class modules (the code you control — the satisfying answer) and is bounded
-// in breadth and total nodes so it stays legible. Importers are ordered so the path toward your
-// own code surfaces first. Returns nil when nothing imports m (it is itself an entrypoint).
-func importWhy(m string, importers map[string]map[string]bool, c *classification, budget int) *ImportNode {
+// moduleImportees builds the forward module-import graph over base: module -> set of modules
+// it directly imports. This is the "what does it pull in?" (go mod graph) direction, paired
+// with moduleImporters' "what pulls it in?" (go mod why).
+func (g *buildGraph) moduleImportees(base map[string]bool) map[string]map[string]bool {
+	dep := map[string]map[string]bool{}
+	for ip := range base {
+		pkg := g.packages[ip]
+		if pkg == nil {
+			continue
+		}
+		src := g.moduleOfPkg[ip]
+		if src == "" {
+			continue
+		}
+		for _, imp := range pkg.Imports {
+			if !base[imp] {
+				continue
+			}
+			dst := g.moduleOfPkg[imp]
+			if dst == "" || dst == src {
+				continue
+			}
+			if dep[src] == nil {
+				dep[src] = map[string]bool{}
+			}
+			dep[src][dst] = true
+		}
+	}
+	return dep
+}
+
+// importTree builds a bounded breadth-first tree from m over the given adjacency (importers
+// for "why", importees for "what it pulls in"). stopOwned terminates branches at 1st-class
+// code, which is the satisfying end for the reverse "why" trace but not for forward deps.
+func importTree(m string, adj map[string]map[string]bool, c *classification, budget int, stopOwned bool) *ImportNode {
 	root := &ImportNode{Module: m, Class: c.classOf(m).String()}
 	visited := map[string]bool{m: true}
 	nodes := 1
@@ -65,26 +95,24 @@ func importWhy(m string, importers map[string]map[string]bool, c *classification
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		// 1st-class modules are terminals: they are the code you own, the end of the "why".
-		if cur != root && owned(c.classOf(cur.Module)) {
+		if stopOwned && cur != root && owned(c.classOf(cur.Module)) {
 			continue
 		}
-		imps := make([]string, 0, len(importers[cur.Module]))
-		for y := range importers[cur.Module] {
+		next := make([]string, 0, len(adj[cur.Module]))
+		for y := range adj[cur.Module] {
 			if !visited[y] {
-				imps = append(imps, y)
+				next = append(next, y)
 			}
 		}
-		// show importers closest to your own code first (owned, then 2nd-, then 3rd-class).
-		sort.Slice(imps, func(i, j int) bool {
-			if ri, rj := classRank(c.classOf(imps[i])), classRank(c.classOf(imps[j])); ri != rj {
+		sort.Slice(next, func(i, j int) bool {
+			if ri, rj := classRank(c.classOf(next[i])), classRank(c.classOf(next[j])); ri != rj {
 				return ri < rj
 			}
-			return imps[i] < imps[j]
+			return next[i] < next[j]
 		})
-		for i, y := range imps {
+		for i, y := range next {
 			if i >= whyBreadth || nodes >= budget {
-				cur.More = len(imps) - i
+				cur.More = len(next) - i
 				break
 			}
 			visited[y] = true
@@ -98,6 +126,19 @@ func importWhy(m string, importers map[string]map[string]bool, c *classification
 		return nil
 	}
 	return root
+}
+
+// importWhy builds the why tree for module m: a reverse walk over importers that terminates at
+// 1st-class modules (the code you control — the satisfying answer to "why is this here?").
+// Returns nil when nothing imports m (it is itself an entrypoint).
+func importWhy(m string, importers map[string]map[string]bool, c *classification, budget int) *ImportNode {
+	return importTree(m, importers, c, budget, true)
+}
+
+// importDeps builds the forward dependency tree for module m: what it pulls in (go mod graph).
+// Unlike importWhy it does not stop at 1st-class code — it keeps descending until the budget.
+func importDeps(m string, importees map[string]map[string]bool, c *classification, budget int) *ImportNode {
+	return importTree(m, importees, c, budget, false)
 }
 
 // attachPlanWhy fills in the import-why tree for each pruned module and every non-stdlib

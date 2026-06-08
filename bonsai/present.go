@@ -270,14 +270,14 @@ func (r *report) pruneCandidates(an *Analysis) {
 // candidate, naming the shared weight that pruning it would NOT free and who holds it.
 func (r *report) pruneHeadline(m ModuleSize) {
 	p := m.Prune
-	line := fmt.Sprintf("best single win: prune %s → %s now", shortModule(m.Module), humize(p.FreedBytes))
+	line := fmt.Sprintf("best single win: prune %s → %s now", m.Module, humize(p.FreedBytes))
 	if p.PotentialBytes > p.FreedBytes {
 		line += fmt.Sprintf(", %s of the %s freeable in its subtree", getPct(p), humize(p.PotentialBytes))
 	}
 	if p.SharedBytes > 0 {
 		extra := ""
 		if len(p.SharedWith) > 0 && len(p.SharedWith[0].AlsoVia) > 0 {
-			extra = " — co-prune " + joinShort(p.SharedWith[0].AlsoVia, 3) + " to free it"
+			extra = " — co-prune " + joinModules(p.SharedWith[0].AlsoVia, 3) + " to free it"
 		}
 		line += fmt.Sprintf(" (%s shared%s)", humize(p.SharedBytes), extra)
 	}
@@ -293,7 +293,8 @@ func (r *report) prunePlan(an *Analysis) {
 		return
 	}
 	r.heading("Prune plan (greedy order)",
-		"each step frees extra bytes after the earlier prunes; the breakdown shows the dep's own code vs the deps it drags out")
+		"breakdown = the dep's own code vs the deps it drags out; an item with no note is freed by this prune alone, "+
+			"\"also prune X\" means X must go too")
 	for i, s := range an.Plan {
 		if i >= r.top {
 			break
@@ -384,14 +385,18 @@ func (r *report) renderWhy(node *ImportNode, prefix string) {
 }
 
 // depLabel renders a freed unit's name: a "(std)" tag for standard-library packages (so e.g.
-// pruning x/tools reads as the go/types toolchain, not a mystery "stdlib"), plus how many
-// other modules import it — the fan-in that says how shared/load-bearing it is.
+// pruning x/tools reads as the go/types toolchain, not a mystery "stdlib"), plus a co-prune
+// note when the item only leaves once other targets are dropped too. No note means this prune
+// alone frees it — answering "do I have to drop anything else to get rid of this?".
 func (r *report) depLabel(f FreedModule) string {
 	label := f.Module
 	if f.Std {
 		label += " (std)"
 	}
-	return label + r.pal.dim(importerNote(f.Importers))
+	if len(f.CoPrune) > 0 {
+		label += "  " + r.pal.warn(fmt.Sprintf("(also prune %s)", joinModules(f.CoPrune, 3)))
+	}
+	return label
 }
 
 // importerNote formats a module's fan-in for inline annotation, or "" when there's nothing
@@ -524,16 +529,14 @@ func getPct(p *PruneResult) string {
 	return pctStr(p.FreedBytes, p.PotentialBytes)
 }
 
-// joinShort renders up to n short module names, collapsing the overflow into "+k more".
-func joinShort(modules []string, n int) string {
-	short := make([]string, 0, len(modules))
-	for _, m := range modules {
-		short = append(short, shortModule(m))
+// joinModules renders up to n full module paths, collapsing the overflow into "+k more".
+// Full paths (not last-segment short names) because these lists are actionable — a co-prune
+// of "v2" or "generic" is meaningless, github.com/aws/aws-sdk-go-v2 is not.
+func joinModules(modules []string, n int) string {
+	if len(modules) <= n {
+		return strings.Join(modules, ", ")
 	}
-	if len(short) <= n {
-		return strings.Join(short, ", ")
-	}
-	return strings.Join(short[:n], ", ") + fmt.Sprintf(" +%d more", len(short)-n)
+	return strings.Join(modules[:n], ", ") + fmt.Sprintf(" +%d more", len(modules)-n)
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }

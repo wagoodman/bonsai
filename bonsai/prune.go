@@ -12,7 +12,8 @@ type FreedModule struct {
 	Bytes     uint64      `json:"bytes"`
 	Std       bool        `json:"std,omitempty"`
 	Importers int         `json:"importers,omitempty"`
-	Why       *ImportNode `json:"why,omitempty"` // who imports this, traced back to 1st-class code
+	CoPrune   []string    `json:"coPrune,omitempty"` // other prune targets that must also be dropped to free this
+	Why       *ImportNode `json:"why,omitempty"`     // who imports this, traced back to 1st-class code
 }
 
 // reachableFromModule returns every package reachable by following imports from the

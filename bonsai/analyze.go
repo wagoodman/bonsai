@@ -81,16 +81,30 @@ type Analysis struct {
 // cfg.Binary set it analyzes that prebuilt artifact; otherwise it builds cfg.Target from
 // cfg.Dir and analyzes the result.
 func Analyze(cfg Config) (*Analysis, error) {
-	if cfg.Binary != "" {
-		return analyzePrebuilt(cfg)
+	bin, g, cleanup, err := resolve(cfg)
+	if err != nil {
+		return nil, err
 	}
-	return analyzeFromSource(cfg)
+	defer cleanup()
+	return analyze(bin, g, optsFrom(cfg)), nil
 }
 
-// analyzeFromSource is the primary path: build the target ourselves (unstripped, capturing
-// the linker's -dumpdep reachability), then analyze the artifact we produced. Source and
-// binary always match, and reachability reflects what actually linked.
-func analyzeFromSource(cfg Config) (*Analysis, error) {
+// resolve produces the analyzed binary and its build graph for cfg, shared by the static
+// report and the interactive Session. It builds from source (capturing -dumpdep reachability)
+// unless cfg.Binary selects a prebuilt artifact. The returned cleanup removes any temporary
+// build artifact and must always be called once bin/g are no longer being constructed.
+func resolve(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
+	if cfg.Binary != "" {
+		bin, g, err := resolvePrebuilt(cfg)
+		return bin, g, func() {}, err
+	}
+	return resolveFromSource(cfg)
+}
+
+// resolveFromSource is the primary path: build the target ourselves (unstripped, capturing
+// the linker's -dumpdep reachability), then load the artifact we produced. Source and binary
+// always match, and reachability reflects what actually linked.
+func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	dir := cfg.Dir
 	if dir == "" {
 		dir = "."
@@ -99,7 +113,7 @@ func analyzeFromSource(cfg Config) (*Analysis, error) {
 	if target == "" {
 		t, err := detectTarget(dir)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		target = t
 	}
@@ -108,16 +122,16 @@ func analyzeFromSource(cfg Config) (*Analysis, error) {
 	arts, cleanup, err := buildForAnalysis(dir, target)
 	if err != nil {
 		buildTask.SetError(err)
-		return nil, err
+		return nil, nil, nil, err
 	}
-	defer cleanup()
 	buildTask.SetCompleted()
 
 	loadTask := startTask("Load binary", "loading binary", "binary loaded")
 	bin, err := loadBinary(arts.Binary)
 	if err != nil {
 		loadTask.SetError(err)
-		return nil, err
+		cleanup()
+		return nil, nil, nil, err
 	}
 	loadTask.SetCompleted()
 
@@ -125,7 +139,8 @@ func analyzeFromSource(cfg Config) (*Analysis, error) {
 	g, err := loadBuildGraph(dir, target, "", "") // built for host
 	if err != nil {
 		graphTask.SetError(err)
-		return nil, err
+		cleanup()
+		return nil, nil, nil, err
 	}
 	// upgrade the source-level import edges to the linker's post-DCE reference graph; on a
 	// parse miss (zero edges) keep the go list imports so reachability still works.
@@ -134,7 +149,7 @@ func analyzeFromSource(cfg Config) (*Analysis, error) {
 	}
 	graphTask.SetCompleted()
 
-	return analyze(bin, g, optsFrom(cfg)), nil
+	return bin, g, cleanup, nil
 }
 
 // optsFrom derives the internal analysis options (classification inputs) from the public
@@ -161,22 +176,22 @@ type analyzeOpts struct {
 	why         bool
 }
 
-// analyzePrebuilt is the fallback path: analyze a binary the user already built. We locate
-// its module source (for the build graph and coupling) but never rebuild — a stripped
-// binary simply yields code-only attribution, and reachability uses source-level imports.
-func analyzePrebuilt(cfg Config) (*Analysis, error) {
+// resolvePrebuilt is the fallback path: load a binary the user already built. We locate its
+// module source (for the build graph and coupling) but never rebuild — a stripped binary
+// simply yields code-only attribution, and reachability uses source-level imports.
+func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 	loadTask := startTask("Load binary", "loading binary", "binary loaded")
 	bin, err := loadBinary(cfg.Binary)
 	if err != nil {
 		loadTask.SetError(err)
-		return nil, err
+		return nil, nil, err
 	}
 	loadTask.SetCompleted()
 
 	target := cfg.Target
 	if target == "" {
 		if bin.MainPkgPath == "" {
-			return nil, fmt.Errorf("could not determine target package from %s (no buildinfo); pass --target", cfg.Binary)
+			return nil, nil, fmt.Errorf("could not determine target package from %s (no buildinfo); pass --target", cfg.Binary)
 		}
 		target = bin.MainPkgPath
 	}
@@ -184,7 +199,7 @@ func analyzePrebuilt(cfg Config) (*Analysis, error) {
 	if dir == "" {
 		dir = findModuleDir(bin.MainModule)
 		if dir == "" {
-			return nil, fmt.Errorf("could not locate source for module %q; run from within its checkout, "+
+			return nil, nil, fmt.Errorf("could not locate source for module %q; run from within its checkout, "+
 				"pass --dir, or drop --binary to build from source", bin.MainModule)
 		}
 	}
@@ -193,11 +208,11 @@ func analyzePrebuilt(cfg Config) (*Analysis, error) {
 	g, err := loadBuildGraph(dir, target, bin.GOOS, bin.GOARCH)
 	if err != nil {
 		graphTask.SetError(err)
-		return nil, err
+		return nil, nil, err
 	}
 	graphTask.SetCompleted()
 
-	return analyze(bin, g, optsFrom(cfg)), nil
+	return bin, g, nil
 }
 
 func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {

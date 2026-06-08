@@ -50,6 +50,7 @@ func New(id clio.Identification) clio.Application {
 
 	root.AddCommand(clio.VersionCommand(id))
 	root.AddCommand(commands.Config())
+	root.AddCommand(commands.Explore())
 
 	return app
 }

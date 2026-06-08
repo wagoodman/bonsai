@@ -83,6 +83,84 @@ func TestGreedyPlanBreakdown(t *testing.T) {
 	}
 }
 
+// a module pulled in by two prune targets frees only once both are dropped. The greedy plan
+// attributes it to the second prune, and that step's item is flagged "also prune <the first>"
+// so the user sees freeing it is not exclusive to one candidate.
+func TestPlanCoPrune(t *testing.T) {
+	spec := graphSpec{
+		main: "app",
+		pkgMod: map[string]string{
+			"app/main": "app", "a": "a", "b": "b", "shared": "shared",
+		},
+		imports: map[string][]string{
+			"app/main": {"a", "b"}, // a and b are both 2nd-class targets
+			"a":        {"shared"},
+			"b":        {"shared"}, // shared is held by both a and b
+		},
+		roots: []string{"app/main"},
+		size:  map[string]uint64{"app/main": 10, "a": 100, "b": 100, "shared": 500},
+	}
+	g := spec.build()
+	c := classify(g, newPatternMatcher(nil), newPatternMatcher(nil), newPatternMatcher(nil))
+	base := g.reachable(nil)
+
+	plan := g.greedyPlan(spec.size, base, c)
+	require.Len(t, plan, 2)
+
+	// step 1 frees a target's own code only; shared stays (the other target holds it).
+	require.Len(t, plan[0].Freed, 0, "first prune frees no shared dep on its own")
+
+	// step 2 frees shared — flagged that the first target must also be pruned.
+	var sharedItem *FreedModule
+	for i := range plan[1].Freed {
+		if plan[1].Freed[i].Module == "shared" {
+			sharedItem = &plan[1].Freed[i]
+		}
+	}
+	require.NotNil(t, sharedItem)
+	assert.Equal(t, []string{plan[0].Module}, sharedItem.CoPrune, "shared needs the first-pruned target too")
+}
+
+// the bug this guards against (the user's go-getter/generic case): a CONTROLLED module
+// "wrapper" reaches deep only through getter. The old blocker-set logic reported "also prune
+// wrapper" everywhere, but pruning getter severs wrapper's import of getter too (wrapper is
+// yours), so getter alone frees deep. wrapper must NOT show up as a co-prune.
+func TestPlanCoPruneNoFalsePositiveThroughStep(t *testing.T) {
+	spec := graphSpec{
+		main: "app",
+		pkgMod: map[string]string{
+			"app/main": "app", "wrapper": "wrapper", "getter": "getter", "deep": "deep",
+		},
+		imports: map[string][]string{
+			"app/main": {"getter", "wrapper"},
+			"wrapper":  {"getter"}, // controlled wrapper reaches deep only via getter
+			"getter":   {"deep"},
+		},
+		roots: []string{"app/main"},
+		size:  map[string]uint64{"app/main": 10, "wrapper": 50, "getter": 100, "deep": 800},
+	}
+	g := spec.build()
+	// wrapper is 1st-class (controlled) but unlocked, so it is a prune target like getter.
+	c := classify(g, newPatternMatcher([]string{"wrapper"}), newPatternMatcher(nil), newPatternMatcher([]string{"wrapper"}))
+	base := g.reachable(nil)
+
+	plan := g.greedyPlan(spec.size, base, c)
+	require.NotEmpty(t, plan)
+
+	// pruning getter frees deep outright — pruning getter also stops wrapper (yours) importing
+	// it — so there is NO "also prune wrapper".
+	step := plan[0]
+	assert.Equal(t, "getter", step.Module)
+	var deep *FreedModule
+	for i := range step.Freed {
+		if step.Freed[i].Module == "deep" {
+			deep = &step.Freed[i]
+		}
+	}
+	require.NotNil(t, deep, "deep is freed by pruning getter alone")
+	assert.Empty(t, deep.CoPrune, "wrapper reaches deep only through getter, so it is not a co-prune")
+}
+
 // standard-library weight a dependency drags in is broken out by package and tagged Std, so
 // "x/tools frees 1.2 MB of stdlib" reads as the go/types toolchain rather than a mystery
 // bucket. Here pruning dep orphans archive/tar, which only dep reached.
