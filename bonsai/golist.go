@@ -20,11 +20,12 @@ type listPackage struct {
 }
 
 type listModule struct {
-	Path     string
-	Version  string
-	Main     bool
-	Indirect bool
-	Dir      string
+	Path      string
+	Version   string
+	Main      bool
+	Indirect  bool
+	Dir       string
+	GoVersion string // the module's declared `go` directive (go.mod), e.g. "1.24.0"; "" if none
 }
 
 // buildGraph is the resolved view of everything that links into the target binary.

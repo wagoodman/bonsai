@@ -52,6 +52,27 @@ func TestSessionWhatIf(t *testing.T) {
 	assert.Equal(t, uint64(0), s.WhatIf(map[string]bool{"stereo": true}).FreedBytes)
 }
 
+// Detail.PullsIn reconciles the two sizes that confuse people: pruning a module frees its
+// exclusive subtree, but the modules it also reaches that survive (held by other importers)
+// stay. PullsIn = Exclusive + held, so "frees X of Y" always adds up.
+func TestDetailPullsInReconciles(t *testing.T) {
+	// shared: syft imports oci directly too, so pruning gcr alone frees gcr+docker (1500); oci
+	// (300) is held by syft and stays. So it pulls in 1800 but only frees 1500.
+	s := testSession(userScenario(true), ClassInputs{Controlled: []string{"stereo", "syft"}})
+	d := s.Detail("gcr")
+	require.True(t, d.Target)
+	assert.Equal(t, uint64(1500), d.Exclusive, "frees gcr+docker; oci held by syft")
+	assert.Equal(t, uint64(1800), d.PullsIn, "Exclusive (1500) + held oci (300)")
+	assert.Equal(t, uint64(300), d.PullsIn-d.Exclusive, "oci held by other importers")
+
+	// exclusive: without syft→oci, gcr owns its whole subtree — nothing shared.
+	excl := testSession(userScenario(false), ClassInputs{Controlled: []string{"stereo", "syft"}})
+	de := excl.Detail("gcr")
+	require.True(t, de.Target)
+	assert.Equal(t, uint64(1800), de.Exclusive)
+	assert.Equal(t, de.Exclusive, de.PullsIn, "nothing shared → pulls in == frees")
+}
+
 func TestSessionMarginal(t *testing.T) {
 	s := testSession(userScenario(true), ClassInputs{Controlled: []string{"stereo", "syft"}})
 

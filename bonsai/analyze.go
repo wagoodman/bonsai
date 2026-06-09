@@ -45,15 +45,16 @@ type Config struct {
 
 // ModuleSize is the aggregated size and metadata for one module in the binary.
 type ModuleSize struct {
-	Module   string       `json:"module"`
-	Size     uint64       `json:"size"`
-	Direct   bool         `json:"direct"`
-	Class    string       `json:"class"` // "main", "1st", "2nd", or "3rd" relative to controlled code
-	InBuild  bool         `json:"inBuild"`
-	Ignored  bool         `json:"ignored,omitempty"` // locked: on the never-prune list
-	Prune    *PruneResult `json:"prune,omitempty"`
-	Coupling *Coupling    `json:"coupling,omitempty"`
-	Why      *ImportNode  `json:"why,omitempty"` // who imports this, traced back to 1st-class code
+	Module    string       `json:"module"`
+	Size      uint64       `json:"size"`
+	Direct    bool         `json:"direct"`
+	Class     string       `json:"class"`               // "main", "1st", "2nd", or "3rd" relative to controlled code
+	GoVersion string       `json:"goVersion,omitempty"` // module's declared `go` directive (go.mod), if any
+	InBuild   bool         `json:"inBuild"`
+	Ignored   bool         `json:"ignored,omitempty"` // locked: on the never-prune list
+	Prune     *PruneResult `json:"prune,omitempty"`
+	Coupling  *Coupling    `json:"coupling,omitempty"`
+	Why       *ImportNode  `json:"why,omitempty"` // who imports this, traced back to 1st-class code
 }
 
 // Analysis is the complete result of attributing a binary's size to its modules and
@@ -73,6 +74,7 @@ type Analysis struct {
 	Modules       []ModuleSize    `json:"modules"`
 	Plan          []PrunePlanStep `json:"prunePlan,omitempty"` // greedy ordered prune plan (marginal savings)
 	Blame         []ModuleBlame   `json:"blame,omitempty"`     // Shapley fair-blame per target (opt-in)
+	GoFloor       GoFloor         `json:"goFloor"`             // lowest go directive the owned modules can declare, given their deps
 	HideIgnored   bool            `json:"-"`                   // presentation: drop ignored modules instead of dimming them
 }
 
@@ -118,6 +120,17 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 		target = t
 	}
 
+	// a clean git checkout resolves identically every time; reuse the cached snapshot to skip
+	// the expensive -dumpdep re-link (the linker can't be served from cache, see cache.go).
+	key, cacheable := resolveCacheKey(dir, target)
+	if cacheable {
+		if bin, g, err := loadResolveCache(key); err == nil {
+			cacheTask := startTask("Load cached analysis", "loading cached analysis", "loaded cached analysis (same commit)")
+			cacheTask.SetCompleted()
+			return bin, g, func() {}, nil
+		}
+	}
+
 	buildTask := startTask("Build binary", "building binary", "binary built")
 	arts, cleanup, err := buildForAnalysis(dir, target)
 	if err != nil {
@@ -149,6 +162,9 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	}
 	graphTask.SetCompleted()
 
+	if cacheable {
+		storeResolveCache(key, bin, g) // best-effort; the analysis is correct regardless
+	}
 	return bin, g, cleanup, nil
 }
 
@@ -269,12 +285,13 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 
 	for mod, sz := range bySize {
 		ms := ModuleSize{
-			Module:  mod,
-			Size:    sz,
-			Direct:  g.directMods[mod],
-			Class:   cls.classOf(mod).String(),
-			InBuild: true,
-			Ignored: cls.isLocked(mod),
+			Module:    mod,
+			Size:      sz,
+			Direct:    g.directMods[mod],
+			Class:     cls.classOf(mod).String(),
+			GoVersion: g.goVersionOf(mod),
+			InBuild:   true,
+			Ignored:   cls.isLocked(mod),
 		}
 		if mod != g.mainModule {
 			ms.Coupling = coup[mod]
@@ -292,6 +309,16 @@ func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
 		an.Modules = append(an.Modules, ms)
 	}
 	sort.Slice(an.Modules, func(i, j int) bool { return an.Modules[i].Size > an.Modules[j].Size })
+
+	// the go-version floor: the lowest `go` directive the owned modules could declare given the
+	// modules actually in the build (every module owning a reachable package).
+	inBuild := map[string]bool{}
+	for ip := range baseReachable {
+		if mod := g.moduleOfPkg[ip]; mod != "" {
+			inBuild[mod] = true
+		}
+	}
+	an.GoFloor = g.goFloor(inBuild, cls)
 	attrTask.SetCompleted()
 
 	planTask := startTask("Compute prune plan", "computing prune plan", "prune plan computed")

@@ -1,8 +1,9 @@
-// Package prunetui is the interactive prune explorer. Everything in the binary starts
-// checked ([x] = present); you prune by unchecking ([ ] = removed) and watch the projected
-// binary size and the set of modules that actually leave update live. The right panes explain
-// the highlighted module: what pruning it would drag out (and what survives, held by others)
-// and why it's in the build (go mod why). Read-only — enter prints the final pruned set.
+// Package prunetui is the interactive prune explorer. Everything in the binary starts checked
+// (● = present); you prune by unchecking (○ = removed) and watch the projected binary size and
+// the modules that actually leave update live. Tab moves focus between the left list and the
+// right detail / why panes (each scrolls); the detail pane explains what the highlighted module
+// pulls in and, on demand, who keeps each shared dep; the why pane is go-mod-why. Read-only —
+// enter prints the final pruned set.
 package prunetui
 
 import (
@@ -10,52 +11,64 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/wagoodman/bonsai/bonsai"
 )
 
 var (
-	styBar  = lipgloss.NewStyle().Bold(true)
-	styHelp = lipgloss.NewStyle().Faint(true)
-	styDim  = lipgloss.NewStyle().Faint(true)
-	styGold = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class (yours)
-	styGood = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styHead = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styRow  = lipgloss.NewStyle().Reverse(true) // highlighted row (dive-style)
+	styBar   = lipgloss.NewStyle().Bold(true)
+	styHelp  = lipgloss.NewStyle().Faint(true)
+	styDim   = lipgloss.NewStyle().Faint(true)
+	styGold  = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class (yours)
+	styGood  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	styWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow: go-floor pinners
+	styCyan  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styHead  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	styRow   = lipgloss.NewStyle().Reverse(true)
+	styFocus = lipgloss.NewStyle().Bold(true).Reverse(true)
 )
 
-// sort modes for the candidate list.
 const (
-	sortPrune = iota // by prune value (what unchecking it frees) — default
-	sortSize         // by size contribution in the binary
-	sortName         // alphabetical
+	glyphIn    = "●" // in the binary
+	glyphOut   = "○" // pruned
+	glyphNone  = "·" // present, not a candidate
+	glyphFloor = "△" // this module pins the go-version floor
 )
 
-// checkbox glyphs: filled = in the binary, hollow = pruned, dot = present but not a candidate.
 const (
-	glyphIn   = "●"
-	glyphOut  = "○"
-	glyphNone = "·"
+	focusList = iota
+	focusDetail
+	focusWhy
 )
 
-// State is the per-target explorer state that persists across runs: which modules are pruned
-// (unchecked) and the classification inputs the user set in-session.
+const (
+	sortPrune = iota
+	sortSize
+	sortName
+	sortGo
+	sortModes // count of sort modes, for cycling
+)
+
+const detailInfoLines = 8 // module info (size/own, prune-alone, coupling, go directive) + "pulls in" header
+
+// State is the per-target explorer state that persists across runs.
 type State struct {
 	Pruned []string
 	Inputs bonsai.ClassInputs
 }
 
-// Result is what the explorer returns on exit, including the state to persist.
+// Result is what the explorer returns on exit.
 type Result struct {
 	Confirmed bool
 	Pruned    []string
 	State     State
 }
 
-// Run launches the explorer over a session seeded with prior State and returns the chosen
-// prune set plus the state to persist.
+// Run launches the explorer and returns the chosen prune set plus the state to persist.
 func Run(s *bonsai.Session, initial State) (Result, error) {
 	res, err := tea.NewProgram(newModel(s, initial), tea.WithAltScreen()).Run()
 	if err != nil {
@@ -71,31 +84,52 @@ func Run(s *bonsai.Session, initial State) (Result, error) {
 
 type model struct {
 	s       *bonsai.Session
-	all     []bonsai.Module // every module, recomputed on reclassify
-	visible []bonsai.Module // filtered + sorted view
-	pruned  map[string]bool // modules unchecked (marked for removal)
+	all     []bonsai.Module
+	visible []bonsai.Module
+	pruned  map[string]bool
 	inputs  bonsai.ClassInputs
 
-	showAll  bool // show every module, not just prune candidates
-	sortMode int
+	showAll   bool
+	sortMode  int
+	filter    textinput.Model
+	filtering bool
 
-	cursor, offset int
-	termW, termH   int
+	focus  int
+	cursor int // list cursor
+	offset int // list scroll
+
+	detailModule string
+	detailCursor int // index into dragStatus (focusDetail)
+	detailOffset int
+	expanded     map[string]bool // dep module -> show its importers
+	whyOffset    int
+
+	termW, termH int
 
 	whatif     bonsai.WhatIf
 	detail     bonsai.Detail
 	dragStatus []bonsai.DepStatus
 
+	goFloor   bonsai.GoFloor  // projected go floor under the current selection
+	baseFloor bonsai.GoFloor  // go floor with nothing pruned (to show how far pruning moves it)
+	floorPins map[string]bool // surviving modules pinning the current floor (Critical, for row marking)
+
 	confirmed bool
 }
 
 func newModel(s *bonsai.Session, initial State) model {
+	ti := textinput.New()
+	ti.Prompt = "filter> "
+	ti.Placeholder = "fuzzy match…"
+
 	m := model{
-		s:      s,
-		pruned: map[string]bool{},
-		inputs: initial.Inputs,
-		termW:  100,
-		termH:  30,
+		s:        s,
+		pruned:   map[string]bool{},
+		inputs:   initial.Inputs,
+		filter:   ti,
+		expanded: map[string]bool{},
+		termW:    100,
+		termH:    30,
 	}
 	for _, p := range initial.Pruned {
 		m.pruned[p] = true
@@ -113,14 +147,27 @@ func newModel(s *bonsai.Session, initial State) model {
 func (m model) Init() tea.Cmd { return nil }
 
 func (m *model) rebuildVisible() {
-	vis := make([]bonsai.Module, 0, len(m.all))
+	base := make([]bonsai.Module, 0, len(m.all))
 	for _, mod := range m.all {
 		if m.showAll || mod.Target {
-			vis = append(vis, mod)
+			base = append(base, mod)
 		}
 	}
-	less := func(i, j int) bool {
-		a, b := vis[i], vis[j]
+	if q := strings.TrimSpace(m.filter.Value()); q != "" {
+		names := make([]string, len(base))
+		for i, mod := range base {
+			names[i] = mod.Module
+		}
+		ranked := fuzzy.Find(q, names)
+		filtered := make([]bonsai.Module, len(ranked))
+		for i, r := range ranked {
+			filtered[i] = base[r.Index]
+		}
+		m.visible = filtered // fuzzy already ranks; don't re-sort
+		return
+	}
+	sort.Slice(base, func(i, j int) bool {
+		a, b := base[i], base[j]
 		switch m.sortMode {
 		case sortName:
 			return a.Module < b.Module
@@ -128,7 +175,16 @@ func (m *model) rebuildVisible() {
 			if a.Size != b.Size {
 				return a.Size > b.Size
 			}
-		default: // sortPrune
+		case sortGo:
+			// highest required go version first, so the modules pinning the floor float up; ties
+			// fall back to size.
+			if c := bonsai.CompareGoVersions(a.GoVersion, b.GoVersion); c != 0 {
+				return c > 0
+			}
+			if a.Size != b.Size {
+				return a.Size > b.Size
+			}
+		default:
 			if a.Exclusive != b.Exclusive {
 				return a.Exclusive > b.Exclusive
 			}
@@ -137,21 +193,30 @@ func (m *model) rebuildVisible() {
 			}
 		}
 		return a.Module < b.Module
-	}
-	sort.Slice(vis, less)
-	m.visible = vis
+	})
+	m.visible = base
 }
 
 func (m *model) recompute() {
 	m.whatif = m.s.WhatIf(m.pruned)
+	m.goFloor = m.s.GoFloor(m.pruned)
+	m.baseFloor = m.s.GoFloor(nil)
+	m.floorPins = make(map[string]bool, len(m.goFloor.Critical))
+	for _, mod := range m.goFloor.Critical {
+		m.floorPins[mod] = true
+	}
 	if m.cursor >= len(m.visible) {
+		m.dragStatus = nil
 		return
 	}
 	cm := m.visible[m.cursor].Module
 	m.detail = m.s.Detail(cm)
-	// reflect the ACTUAL current selection — not a hypothesis. With nothing pruned every dep is
-	// in the binary; a dep only shows removed (○) once your selection actually orphans it.
 	m.dragStatus = m.s.DragOutStatus(m.pruned, cm)
+	if cm != m.detailModule { // moved to a new module: reset detail-pane navigation
+		m.detailModule = cm
+		m.detailCursor, m.detailOffset = 0, 0
+		m.expanded = map[string]bool{}
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -161,48 +226,147 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fixOffset()
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc", "q":
-			return m, tea.Quit
-		case "enter":
-			m.confirmed = true
-			return m, tea.Quit
-		case "up", "k", "ctrl+p":
-			m.move(-1)
-		case "down", "j", "ctrl+n":
-			m.move(1)
-		case "pgup":
-			m.move(-m.listH())
-		case "pgdown":
-			m.move(m.listH())
-		case "home", "g":
-			m.move(-len(m.visible))
-		case "end", "G":
-			m.move(len(m.visible))
-		case " ", "x":
-			m.togglePrune()
-		case "a":
-			m.refilter(func() { m.showAll = !m.showAll })
-		case "s":
-			m.refilter(func() { m.sortMode = (m.sortMode + 1) % 3 })
-		case "c":
-			m.reclass(&m.inputs.Controlled)
-		case "l":
-			m.reclass(&m.inputs.Locked)
-		case "u":
-			m.reclass(&m.inputs.Unlock)
+		if m.filtering {
+			return m.updateFilter(msg)
 		}
+		return m.updateKey(msg)
 	}
 	return m, nil
 }
 
-func (m *model) move(delta int) {
+func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.filter.SetValue("")
+		m.filtering = false
+		m.rebuildVisible()
+		m.clampCursor()
+		m.recompute()
+		return m, nil
+	case "enter":
+		m.filtering = false
+		m.filter.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	prev := m.filter.Value()
+	m.filter, cmd = m.filter.Update(msg)
+	if m.filter.Value() != prev {
+		m.rebuildVisible()
+		m.clampCursor()
+		m.recompute()
+	}
+	return m, cmd
+}
+
+func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "esc", "q":
+		return m, tea.Quit
+	case "enter":
+		m.confirmed = true
+		return m, tea.Quit
+	case "tab":
+		m.focus = (m.focus + 1) % 3
+		return m, nil
+	case "shift+tab":
+		m.focus = (m.focus + 2) % 3
+		return m, nil
+	case "/":
+		m.filtering = true
+		m.filter.Focus()
+		return m, textinput.Blink
+	}
+
+	switch m.focus {
+	case focusDetail:
+		return m.updateDetail(msg)
+	case focusWhy:
+		return m.updateWhy(msg)
+	default:
+		return m.updateList(msg)
+	}
+}
+
+func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k", "ctrl+p":
+		m.moveList(-1)
+	case "down", "j", "ctrl+n":
+		m.moveList(1)
+	case "pgup":
+		m.moveList(-m.listH())
+	case "pgdown":
+		m.moveList(m.listH())
+	case "home", "g":
+		m.moveList(-len(m.visible))
+	case "end", "G":
+		m.moveList(len(m.visible))
+	case " ", "x":
+		m.togglePrune()
+	case "a":
+		m.refilter(func() { m.showAll = !m.showAll })
+	case "s":
+		m.refilter(func() { m.sortMode = (m.sortMode + 1) % sortModes })
+	case "c":
+		m.reclass(&m.inputs.Controlled)
+	case "l":
+		m.reclass(&m.inputs.Locked)
+	case "u":
+		m.reclass(&m.inputs.Unlock)
+	}
+	return m, nil
+}
+
+func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.detailCursor > 0 {
+			m.detailCursor--
+		}
+	case "down", "j":
+		if m.detailCursor < len(m.dragStatus)-1 {
+			m.detailCursor++
+		}
+	case " ", "x", "right", "l", "enter":
+		if m.detailCursor < len(m.dragStatus) {
+			mod := m.dragStatus[m.detailCursor].Module
+			m.expanded[mod] = !m.expanded[mod]
+		}
+		if msg.String() == "enter" { // enter shouldn't quit while exploring the detail pane
+			return m, nil
+		}
+	}
+	m.scrollDetailToCursor()
+	return m, nil
+}
+
+func (m model) updateWhy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.whyOffset = max(0, m.whyOffset-1)
+	case "down", "j":
+		m.whyOffset++
+	case "pgup":
+		m.whyOffset = max(0, m.whyOffset-5)
+	case "pgdown":
+		m.whyOffset += 5
+	}
+	return m, nil
+}
+
+func (m *model) moveList(delta int) {
 	if len(m.visible) == 0 {
 		return
 	}
 	m.cursor = clamp(m.cursor+delta, 0, len(m.visible)-1)
 	m.fixOffset()
 	m.recompute()
+}
+
+func (m *model) clampCursor() {
+	m.cursor = clamp(m.cursor, 0, max(0, len(m.visible)-1))
+	m.offset = 0
 }
 
 func (m *model) fixOffset() {
@@ -218,8 +382,27 @@ func (m *model) fixOffset() {
 	}
 }
 
-// togglePrune unchecks (prunes) / re-checks (restores) the highlighted candidate. Only prune
-// targets can be toggled.
+func (m *model) scrollDetailToCursor() {
+	_, _, _, detailH, _ := m.layout()
+	avail := max(1, detailH-1)
+	line := detailInfoLines
+	for k := 0; k < m.detailCursor && k < len(m.dragStatus); k++ {
+		line++
+		if m.expanded[m.dragStatus[k].Module] {
+			line += len(m.dragStatus[k].NeededBy)
+		}
+	}
+	if line < m.detailOffset {
+		m.detailOffset = line
+	}
+	if line >= m.detailOffset+avail {
+		m.detailOffset = line - avail + 1
+	}
+	if m.detailOffset < 0 {
+		m.detailOffset = 0
+	}
+}
+
 func (m *model) togglePrune() {
 	if m.cursor >= len(m.visible) || !m.visible[m.cursor].Target {
 		return
@@ -233,12 +416,8 @@ func (m *model) togglePrune() {
 	m.recompute()
 }
 
-// refilter applies a view change (filter/sort) and keeps the cursor on the same module.
 func (m *model) refilter(change func()) {
-	mod := ""
-	if m.cursor < len(m.visible) {
-		mod = m.visible[m.cursor].Module
-	}
+	mod := m.cursorModule()
 	change()
 	m.rebuildVisible()
 	m.cursor = indexOf(m.visible, mod)
@@ -246,17 +425,14 @@ func (m *model) refilter(change func()) {
 	m.recompute()
 }
 
-// reclass toggles the highlighted module's membership in a classification list and re-derives
-// candidates, keeping the cursor on the same module.
 func (m *model) reclass(list *[]string) {
-	if m.cursor >= len(m.visible) {
+	mod := m.cursorModule()
+	if mod == "" {
 		return
 	}
-	mod := m.visible[m.cursor].Module
 	*list = toggleItem(*list, mod)
 	m.s.Reclassify(m.inputs)
 	m.all = m.s.Modules()
-	// drop pruned entries that are no longer prune targets (e.g. one just locked / made 1st-class).
 	targets := map[string]bool{}
 	for _, md := range m.all {
 		if md.Target {
@@ -274,41 +450,11 @@ func (m *model) reclass(list *[]string) {
 	m.recompute()
 }
 
-// View
-
-func (m model) View() string {
-	bodyH := max(3, m.termH-2)
-	leftW := clamp(m.termW*42/100, 28, 70)
-	rightW := max(24, m.termW-leftW-1)
-
-	left := pad(m.viewList(leftW), leftW, bodyH)
-	rightTopH := bodyH * 6 / 10
-	right := lipgloss.JoinVertical(lipgloss.Left,
-		pad(m.viewDetail(rightW), rightW, rightTopH),
-		pad(m.viewWhy(rightW), rightW, bodyH-rightTopH))
-
-	divider := styDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyH), "\n"))
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
-	return strings.Join([]string{m.viewBar(), body, m.viewHelp()}, "\n")
-}
-
-func (m model) listH() int { return max(1, m.termH-2-1) }
-
-func (m model) viewBar() string {
-	w := m.whatif
-	delta := w.OriginalSize - w.ProjectedSize
-	pct := 0.0
-	if w.OriginalSize > 0 {
-		pct = float64(delta) / float64(w.OriginalSize) * 100
+func (m model) cursorModule() string {
+	if m.cursor < len(m.visible) {
+		return m.visible[m.cursor].Module
 	}
-	saved := styDim.Render("(unchanged)")
-	if delta > 0 {
-		saved = styGood.Render(fmt.Sprintf("−%s (−%.1f%%)", humize(delta), pct))
-	}
-	return styBar.Render(fmt.Sprintf("binary %s → %s", humize(w.OriginalSize), styGood.Render(humize(w.ProjectedSize)))) +
-		"  " + saved +
-		"  " + styDim.Render(fmt.Sprintf("· %d candidates unchecked · %d modules removed",
-		len(m.pruned), len(w.PrunedModules)))
+	return ""
 }
 
 func (m model) candidateCount() int {
@@ -321,12 +467,87 @@ func (m model) candidateCount() int {
 	return n
 }
 
+// layout splits the screen: the why pane floats to the bottom at its content height (capped),
+// leaving the rest to the details pane.
+func (m model) layout() (leftW, rightW, bodyH, detailH, whyH int) {
+	filterH := 0
+	if m.filtering {
+		filterH = 1
+	}
+	bodyH = max(4, m.termH-2-filterH)
+	// the left list is the primary surface (you select modules there and the paths are long),
+	// so favor it slightly and let it scale with the terminal rather than capping it.
+	leftW = clamp(m.termW*55/100, 34, m.termW-28)
+	rightW = max(24, m.termW-leftW-1)
+	whyH = clamp(len(m.whyBody(rightW))+1, 2, bodyH/2)
+	detailH = bodyH - whyH
+	return
+}
+
+func (m model) listH() int {
+	_, _, bodyH, _, _ := m.layout()
+	return max(1, bodyH-1)
+}
+
+// View
+
+func (m model) View() string {
+	leftW, rightW, bodyH, detailH, whyH := m.layout()
+
+	left := pad(m.viewList(leftW), leftW, bodyH)
+	detail := renderPane("Details", m.detailBody(rightW), m.detailOffset, rightW, detailH, m.focus == focusDetail)
+	why := renderPane("Why it's here  (go mod why)", m.whyBody(rightW), m.whyOffset, rightW, whyH, m.focus == focusWhy)
+	right := lipgloss.JoinVertical(lipgloss.Left, detail, why)
+
+	divider := styDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyH), "\n"))
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
+
+	parts := []string{m.viewBar()}
+	if m.filtering {
+		parts = append(parts, m.filter.View())
+	}
+	parts = append(parts, body, m.viewHelp())
+	return strings.Join(parts, "\n")
+}
+
+func (m model) viewBar() string {
+	w := m.whatif
+	delta := w.OriginalSize - w.ProjectedSize
+	saved := styDim.Render("(unchanged)")
+	if delta > 0 {
+		pct := float64(delta) / float64(max64(w.OriginalSize, 1)) * 100
+		saved = styGood.Render(fmt.Sprintf("−%s (−%.1f%%)", humize(delta), pct))
+	}
+	return styBar.Render(fmt.Sprintf("binary %s → %s", humize(w.OriginalSize), styGood.Render(humize(w.ProjectedSize)))) +
+		"  " + saved +
+		"  " + styDim.Render(fmt.Sprintf("· %d unchecked · %d modules removed", len(m.pruned), len(w.PrunedModules))) +
+		"  " + m.floorBar()
+}
+
+// floorBar renders the live go-version floor: the lowest `go` directive the owned modules can
+// declare under the current selection, how far pruning has already lowered it from the baseline,
+// and how many surviving deps (△) still pin it. This is the "set the most minimum go version"
+// readout that updates as candidates are unchecked.
+func (m model) floorBar() string {
+	f := m.goFloor
+	if f.Version == "" {
+		return styDim.Render("· go floor: none")
+	}
+	pins := styWarn.Render(fmt.Sprintf("%s%d pinning", glyphFloor, len(f.Critical)))
+	if b := m.baseFloor.Version; b != "" && b != f.Version { // pruning has dropped the floor
+		return styDim.Render("· go ≥ ") + styDim.Render(b) + styDim.Render(" → ") +
+			styGood.Render(f.Version) + "  " + pins
+	}
+	return styDim.Render(fmt.Sprintf("· go ≥ %s  ", f.Version)) + pins
+}
+
 func (m model) viewList(width int) string {
 	scope := "Candidates"
 	if m.showAll {
 		scope = "All modules"
 	}
-	lines := []string{header(fmt.Sprintf("%s · %s", scope, sortLabel(m.sortMode)), width)}
+	title := fmt.Sprintf("%s · %s", scope, sortLabel(m.sortMode))
+	lines := []string{headerFor(title, width, m.focus == focusList)}
 	h := m.listH()
 	end := min(m.offset+h, len(m.visible))
 	for i := m.offset; i < end; i++ {
@@ -334,94 +555,283 @@ func (m model) viewList(width int) string {
 		box := glyphNone
 		if mod.Target {
 			if m.pruned[mod.Module] {
-				box = glyphOut // pruned
+				box = glyphOut
 			} else {
-				box = glyphIn // in the binary
+				box = glyphIn
 			}
 		}
 		val := mod.Size
 		if m.sortMode == sortPrune && mod.Exclusive > 0 {
 			val = mod.Exclusive
 		}
+		// the go column: the module's declared `go` minimum, △-flagged and highlighted when it
+		// pins the floor.
+		goPlain, goStyled := goVerCell(mod, m.floorPins[mod.Module])
 		if i == m.cursor {
-			plain := fmt.Sprintf("%s %8s  %s", box, humize(val), truncate(mod.Module, width-15))
+			plain := fmt.Sprintf("%s %s %8s  %s %s", box, classTagPlain(mod), humize(val), goPlain, truncate(mod.Module, width-23))
 			lines = append(lines, styRow.Render(fit(plain, width)))
 			continue
 		}
-		name := classStyle(mod.Class, mod.Controlled, mod.Locked, truncate(mod.Module, width-15))
-		switch {
-		case mod.Target && m.pruned[mod.Module]:
-			lines = append(lines, styDim.Render(fmt.Sprintf("%s %8s  %s", glyphOut, humize(val), stripStyle(name))))
-		case mod.Target:
-			lines = append(lines, fmt.Sprintf("%s %8s  %s", styGood.Render(glyphIn), humize(val), name))
-		default:
-			lines = append(lines, fmt.Sprintf("%s %8s  %s", styDim.Render(glyphNone), humize(val), name))
+		boxR := styDim.Render(box)
+		if box == glyphIn {
+			boxR = styGood.Render(box)
 		}
+		name := classStyle(mod.Class, mod.Controlled, mod.Locked, truncate(mod.Module, width-23))
+		if mod.Target && m.pruned[mod.Module] {
+			name = styDim.Render(stripStyle(name))
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %8s  %s %s", boxR, classTag(mod), humize(val), goStyled, name))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (m model) viewDetail(width int) string {
+// detailBody returns the scrollable lines of the details pane (module info + what it pulls in,
+// with per-dep importer branches when expanded).
+func (m model) detailBody(width int) []string {
 	d := m.detail
 	if d.Module == "" {
-		return header("Details", width)
+		return nil
 	}
-	lines := []string{
-		header("Details", width),
+	body := []string{
 		classStyle(d.Class, d.Controlled, d.Locked, truncate(d.Module, width)),
 		styDim.Render(detailTags(d)),
-		fmt.Sprintf("size %s · own %s · prune-alone %s", humize(d.Size), humize(d.Own), valStr(d)),
-		styDim.Render(fmt.Sprintf("coupling %d pkgs · %d imports · %d syms · imported by %d",
+		fmt.Sprintf("size %s · own %s", humize(d.Size), humize(d.Own)),
+		pruneAloneLine(d),
+		styDim.Render(fmt.Sprintf("coupling %d pkg · %d imp · %d sym · imported by %d",
 			d.Coupling.ImportingPackages, d.Coupling.ImportSites, d.Coupling.DistinctSymbols, d.Importers)),
+		m.goDirectiveLine(d),
 		"",
-		styHead.Render("pulls in  ") + styDim.Render(glyphIn+" in binary  "+glyphOut+" pruned"),
+		styHead.Render("pulls in  ") + styDim.Render(glyphIn+" in binary  "+glyphOut+" pruned · tab here, space expands"),
 	}
-	for _, st := range m.dragStatus {
+	for i, st := range m.dragStatus {
 		label := st.Module
 		if st.Module == "std" {
 			label = "(standard library)"
 		}
-		if st.Freed { // removed by the current selection
-			lines = append(lines, styDim.Render(fmt.Sprintf("%s %8s  %s", glyphOut, humize(st.Bytes), label)))
-			continue
+		var line string
+		switch {
+		case st.Freed:
+			line = styDim.Render(fmt.Sprintf("%s %8s  %s", glyphOut, humize(st.Bytes), label))
+		case len(st.NeededBy) == 0:
+			line = fmt.Sprintf("%s %8s  %s%s", styGood.Render(glyphIn), humize(st.Bytes), label, styDim.Render("  (only via this)"))
+		default:
+			note := fmt.Sprintf("  (needed by %d)", len(st.NeededBy))
+			line = fmt.Sprintf("%s %8s  %s%s", styGood.Render(glyphIn), humize(st.Bytes), label, styDim.Render(note))
 		}
-		suffix := styDim.Render("  ← only via this")
-		if len(st.NeededBy) > 0 {
-			suffix = styDim.Render("  ← also needed by " + neededList(st.NeededBy))
+		if m.focus == focusDetail && i == m.detailCursor {
+			line = styRow.Render(fit(plainDep(st, label), width))
 		}
-		lines = append(lines, fmt.Sprintf("%s %8s  %s%s", styGood.Render(glyphIn), humize(st.Bytes), label, suffix))
+		body = append(body, line)
+		if m.expanded[st.Module] {
+			for j, imp := range st.NeededBy {
+				conn := "├ "
+				if j == len(st.NeededBy)-1 {
+					conn = "└ "
+				}
+				body = append(body, "      "+styDim.Render(conn+truncate(imp, width-8)))
+			}
+		}
 	}
-	return strings.Join(lines, "\n")
+	return body
 }
 
-func (m model) viewWhy(width int) string {
-	lines := []string{header("Why it's here  (go mod why)", width)}
-	if m.detail.Why == nil {
-		lines = append(lines, styDim.Render("  (an entrypoint / nothing imports it)"))
-		return strings.Join(lines, "\n")
+// pruneAloneLine reconciles the two numbers that confuse people: a module pulls in a gross
+// amount, but pruning it only frees the part that isn't also reached some other way. Saying
+// both — "frees X of Y pulled in, Z held by other importers" — makes the gap explicit.
+func pruneAloneLine(d bonsai.Detail) string {
+	if !d.Target {
+		return styDim.Render("prune-alone  — (locked / not a candidate)")
 	}
-	lines = append(lines, renderWhy(m.detail.Why, "  ", width)...)
-	return strings.Join(lines, "\n")
+	frees := styGood.Render(humize(d.Exclusive))
+	if d.PullsIn > d.Exclusive {
+		held := d.PullsIn - d.Exclusive
+		return "prune-alone frees " + frees + styDim.Render(fmt.Sprintf(
+			" of %s pulled in · %s held by others (stays)", humize(d.PullsIn), humize(held)))
+	}
+	return "prune-alone frees " + frees + styDim.Render(" (all it pulls in — nothing shared)")
 }
 
-func renderWhy(n *bonsai.ImportNode, prefix string, width int) []string {
-	var out []string
+// goDirectiveLine describes the highlighted module's `go` directive and its role in the floor:
+// a △ pinner is why the owned modules can't go lower (and what they'd drop to if it left); your
+// own modules just report theirs; everything else sits harmlessly below the floor.
+func (m model) goDirectiveLine(d bonsai.Detail) string {
+	if d.GoVersion == "" {
+		return styDim.Render("go directive  (none declared)")
+	}
+	prefix := styDim.Render(fmt.Sprintf("go directive  %s  ", d.GoVersion))
+	switch {
+	case d.Controlled || d.Class == "main":
+		return prefix + styDim.Render("(yours — set freely)")
+	case m.floorPins[d.Module]:
+		note := fmt.Sprintf("%s pins go floor %s", glyphFloor, m.goFloor.Version)
+		if n := len(m.goFloor.Critical); n > 1 {
+			note = fmt.Sprintf("%s 1 of %d pinning go floor %s", glyphFloor, n, m.goFloor.Version)
+		} else if m.goFloor.NextVersion != "" {
+			note = fmt.Sprintf("%s pins go floor %s (→ %s if pruned)", glyphFloor, m.goFloor.Version, m.goFloor.NextVersion)
+		}
+		return prefix + styWarn.Render(note)
+	default:
+		return prefix + styDim.Render(fmt.Sprintf("(below floor go ≥ %s)", m.goFloor.Version))
+	}
+}
+
+// whyBody renders go-mod-why as a tree: your 1st-class code at the top, the target at the
+// bottom, each parent importing its child (the same direction as `go mod graph`'s "A B"). The
+// Session hands us the reverse importer tree (target at the root); we invert it into
+// consumer-rooted import paths and draw them with tree connectors.
+func (m model) whyBody(width int) []string {
+	root := m.detail.Why
+	if root == nil {
+		return []string{styDim.Render("(an entrypoint — nothing imports it)")}
+	}
+	var paths [][]wnode
+	collectWhyPaths(root, nil, &paths)
+	trie := &whyTrie{}
+	for _, p := range paths {
+		trie.insert(p)
+	}
+	legend := styDim.Render("imports flow ↓ (your code → this module)")
+	return append([]string{legend}, renderWhyTrie(trie, "", width, m.detail.Module)...)
+}
+
+type wnode struct{ mod, class string }
+
+// collectWhyPaths walks the reverse importer tree (root = target, children = importers) and
+// emits each root→leaf path reversed, so it reads consumer→…→target.
+func collectWhyPaths(n *bonsai.ImportNode, acc []wnode, out *[][]wnode) {
+	acc = append(acc, wnode{n.Module, n.Class})
+	if len(n.Via) == 0 {
+		rev := make([]wnode, len(acc))
+		for i, w := range acc {
+			rev[len(acc)-1-i] = w
+		}
+		*out = append(*out, rev)
+		return
+	}
 	for _, child := range n.Via {
-		gold := child.Class == "1st" || child.Class == "main"
-		out = append(out, prefix+styDim.Render("← ")+classStyle(child.Class, gold, false, truncate(child.Module, width-len(prefix)-4))+styDim.Render(" ("+child.Class+")"))
-		out = append(out, renderWhy(child, prefix+"  ", width)...)
+		collectWhyPaths(child, acc, out)
 	}
-	if n.More > 0 {
-		out = append(out, prefix+styDim.Render(fmt.Sprintf("← +%d more", n.More)))
+}
+
+// whyTrie merges the inverted import paths into a single tree (shared prefixes collapse).
+type whyTrie struct {
+	mod   string
+	class string
+	kids  []*whyTrie
+}
+
+func (t *whyTrie) insert(path []wnode) {
+	cur := t
+	for _, w := range path {
+		var kid *whyTrie
+		for _, k := range cur.kids {
+			if k.mod == w.mod {
+				kid = k
+				break
+			}
+		}
+		if kid == nil {
+			kid = &whyTrie{mod: w.mod, class: w.class}
+			cur.kids = append(cur.kids, kid)
+		}
+		cur = kid
+	}
+}
+
+func renderWhyTrie(t *whyTrie, prefix string, width int, target string) []string {
+	var out []string
+	for i, kid := range t.kids {
+		last := i == len(t.kids)-1
+		branch, cont := "├─ ", "│  "
+		if last {
+			branch, cont = "└─ ", "   "
+		}
+		gold := kid.class == "1st" || kid.class == "main"
+		name := classStyle(kid.class, gold, false, truncate(kid.mod, width-len(prefix)-8))
+		tag := styDim.Render(" " + kid.class)
+		if kid.mod == target {
+			tag = styGood.Render(" ◂ this module")
+		}
+		out = append(out, prefix+styDim.Render(branch)+name+tag)
+		out = append(out, renderWhyTrie(kid, prefix+cont, width, target)...)
 	}
 	return out
 }
 
 func (m model) viewHelp() string {
-	return styHelp.Render("↑/↓ move · space prune/restore · a all/candidates · s sort · c 1st · l lock · u unlock · enter apply · q cancel")
+	switch m.focus {
+	case focusDetail:
+		return styHelp.Render("DETAIL · ↑/↓ dep · space expand importers · tab next pane · q cancel")
+	case focusWhy:
+		return styHelp.Render("WHY · ↑/↓ scroll · tab next pane · q cancel")
+	default:
+		return styHelp.Render("↑/↓ move · space prune · / filter · a all · s sort · c/l/u class · tab panes · enter apply · q quit") +
+			styDim.Render("   "+glyphFloor+" pins go floor")
+	}
 }
 
-// styling helpers
+// rendering helpers
+
+// classTag is a colored one-letter class indicator: M(ain), 1st, 2nd candidate, L(ocked), 3rd.
+func classTag(mod bonsai.Module) string {
+	switch {
+	case mod.Class == "main":
+		return styGold.Render("M")
+	case mod.Controlled:
+		return styGold.Render("1")
+	case mod.Locked:
+		return styDim.Render("L")
+	case mod.Target:
+		return styCyan.Render("2")
+	default:
+		return styDim.Render("3")
+	}
+}
+
+func classTagPlain(mod bonsai.Module) string {
+	switch {
+	case mod.Class == "main":
+		return "M"
+	case mod.Controlled:
+		return "1"
+	case mod.Locked:
+		return "L"
+	case mod.Target:
+		return "2"
+	default:
+		return "3"
+	}
+}
+
+// goVerCell renders a module's declared `go` minimum as a fixed-width column, returning both the
+// plain (for the reverse-video cursor row) and styled forms: △-flagged and yellow when it pins
+// the floor, dim otherwise, and an em-dash when the module declares no directive.
+func goVerCell(mod bonsai.Module, pins bool) (plain, styled string) {
+	const w = 7 // fits "△1.24.0"
+	switch {
+	case mod.GoVersion == "":
+		plain = fmt.Sprintf("%-*s", w, "—")
+		return plain, styDim.Render(plain)
+	case pins:
+		plain = fmt.Sprintf("%-*s", w, glyphFloor+mod.GoVersion)
+		return plain, styWarn.Render(plain)
+	default:
+		plain = fmt.Sprintf("%-*s", w, mod.GoVersion)
+		return plain, styDim.Render(plain)
+	}
+}
+
+func plainDep(st bonsai.DepStatus, label string) string {
+	box := glyphIn
+	note := "  (only via this)"
+	switch {
+	case st.Freed:
+		box, note = glyphOut, ""
+	case len(st.NeededBy) > 0:
+		note = fmt.Sprintf("  (needed by %d)", len(st.NeededBy))
+	}
+	return fmt.Sprintf("%s %8s  %s%s", box, humize(st.Bytes), label, note)
+}
 
 func classStyle(class string, controlled, locked bool, name string) string {
 	switch {
@@ -440,6 +850,8 @@ func sortLabel(mode int) string {
 		return "by size"
 	case sortName:
 		return "A–Z"
+	case sortGo:
+		return "by go min"
 	default:
 		return "by prune value"
 	}
@@ -459,19 +871,39 @@ func detailTags(d bonsai.Detail) string {
 	return strings.Join(parts, " · ")
 }
 
-func valStr(d bonsai.Detail) string {
-	if d.Target {
-		return styGood.Render(humize(d.Exclusive))
+// renderPane composes a pane: a (focus-aware) title rule plus a scrolled window of body lines,
+// fixed to w×h.
+func renderPane(title string, body []string, offset, w, h int, focused bool) string {
+	avail := max(1, h-1)
+	if offset > max(0, len(body)-avail) {
+		offset = max(0, len(body)-avail)
 	}
-	return styDim.Render("—")
+	if offset < 0 {
+		offset = 0
+	}
+	end := min(offset+avail, len(body))
+	visible := []string{}
+	if offset < len(body) {
+		visible = body[offset:end]
+	}
+	more := ""
+	if len(body) > avail {
+		more = styDim.Render(fmt.Sprintf("  [%d–%d/%d]", offset+1, end, len(body)))
+	}
+	lines := append([]string{headerFor(title+more, w, focused)}, visible...)
+	return pad(strings.Join(lines, "\n"), w, h)
 }
 
-func header(title string, width int) string {
+func headerFor(title string, width int, focused bool) string {
+	style := styHead
+	if focused {
+		style = styFocus
+	}
 	rule := ""
 	if n := width - lipgloss.Width(title) - 1; n > 0 {
 		rule = " " + strings.Repeat("─", n)
 	}
-	return styHead.Render(title) + styDim.Render(rule)
+	return style.Render(title) + styDim.Render(rule)
 }
 
 func pad(s string, w, h int) string {
@@ -486,30 +918,6 @@ func pad(s string, w, h int) string {
 		lines = append(lines, "")
 	}
 	return lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
-}
-
-// neededList renders the other modules keeping a dep alive — compact short names, capped.
-func neededList(mods []string) string {
-	const n = 2
-	short := make([]string, 0, n)
-	for i, mod := range mods {
-		if i >= n {
-			break
-		}
-		short = append(short, shortName(mod))
-	}
-	s := strings.Join(short, ", ")
-	if len(mods) > n {
-		s += fmt.Sprintf(" +%d", len(mods)-n)
-	}
-	return s
-}
-
-func shortName(m string) string {
-	if i := strings.LastIndexByte(m, '/'); i >= 0 {
-		return m[i+1:]
-	}
-	return m
 }
 
 func humize(b uint64) string {
@@ -587,4 +995,11 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func max64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -79,8 +79,54 @@ func (r *report) write(an *Analysis) error {
 	r.largestModules(an)
 	r.pruneCandidates(an)
 	r.prunePlan(an)
+	r.goFloor(an)
 	r.blame(an)
 	return nil
+}
+
+// goFloor reports the lowest `go` directive the owned (main + 1st-class) modules could declare,
+// the headroom available to reclaim right now (your declared version vs the dep-imposed floor),
+// and the dependencies pinning that floor — the modules to prune to push it lower.
+func (r *report) goFloor(an *Analysis) {
+	f := an.GoFloor
+	if f.Version == "" {
+		r.heading("Go version floor", "no dependency declares a `go` directive — nothing constrains your minimum")
+		return
+	}
+
+	r.heading("Go version floor",
+		"the lowest `go` directive your own modules can declare; deps pin it — prune them to push it lower")
+
+	// headroom you can reclaim now (drop your `go` line to the floor) vs what pruning would buy.
+	if f.OwnedMax != "" && cmpGo(f.OwnedMax, f.Version) > 0 {
+		r.floorNote(r.pal.good(fmt.Sprintf(
+			"you declare go %s but deps only require go %s — you can drop to %s now",
+			f.OwnedMax, f.Version, f.Version)))
+	} else {
+		r.floorNote(r.pal.dim(fmt.Sprintf("deps require go ≥ %s", f.Version)))
+	}
+	if f.NextVersion != "" {
+		r.floorNote(r.pal.dim(fmt.Sprintf(
+			"prune the %d module(s) below to reach go %s", len(f.Critical), f.NextVersion)))
+	}
+	fmt.Fprintln(r.w)
+
+	rows := make([][]string, 0, len(f.Critical))
+	for _, mod := range f.Critical {
+		rows = append(rows, []string{r.pal.warn("go " + f.Version), mod})
+	}
+	r.table([]string{"REQUIRES", "MODULE (pins the floor)"}, rows, nil)
+}
+
+// floorNote prints one of the go-floor headline lines, italicized in markdown and indented
+// elsewhere (matching pruneHeadline). The text is pre-styled for the plain/color path; markdown
+// strips it back to plain.
+func (r *report) floorNote(line string) {
+	if r.md {
+		fmt.Fprintf(r.w, "_%s_\n\n", stripANSI(line))
+		return
+	}
+	fmt.Fprintf(r.w, "  %s\n", line)
 }
 
 func (r *report) heading(title, subtitle string) {

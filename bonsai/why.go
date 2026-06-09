@@ -84,10 +84,12 @@ func (g *buildGraph) moduleImportees(base map[string]bool) map[string]map[string
 	return dep
 }
 
-// importTree builds a bounded breadth-first tree from m over the given adjacency (importers
-// for "why", importees for "what it pulls in"). stopOwned terminates branches at 1st-class
-// code, which is the satisfying end for the reverse "why" trace but not for forward deps.
-func importTree(m string, adj map[string]map[string]bool, c *classification, budget int, stopOwned bool) *ImportNode {
+// importTree builds a breadth-first tree from m over the given adjacency (importers for
+// "why", importees for "what it pulls in"), bounded by breadth (importers shown per node) and
+// budget (total nodes); the overflow is recorded in More. stopOwned terminates branches at
+// 1st-class code, which is the satisfying end for the reverse "why" trace but not for forward
+// deps. Because nodes are globally deduped, generous limits stay finite (≤ module count).
+func importTree(m string, adj map[string]map[string]bool, c *classification, budget, breadth int, stopOwned bool) *ImportNode {
 	root := &ImportNode{Module: m, Class: c.classOf(m).String()}
 	visited := map[string]bool{m: true}
 	nodes := 1
@@ -111,7 +113,7 @@ func importTree(m string, adj map[string]map[string]bool, c *classification, bud
 			return next[i] < next[j]
 		})
 		for i, y := range next {
-			if i >= whyBreadth || nodes >= budget {
+			if i >= breadth || nodes >= budget {
 				cur.More = len(next) - i
 				break
 			}
@@ -132,13 +134,7 @@ func importTree(m string, adj map[string]map[string]bool, c *classification, bud
 // 1st-class modules (the code you control — the satisfying answer to "why is this here?").
 // Returns nil when nothing imports m (it is itself an entrypoint).
 func importWhy(m string, importers map[string]map[string]bool, c *classification, budget int) *ImportNode {
-	return importTree(m, importers, c, budget, true)
-}
-
-// importDeps builds the forward dependency tree for module m: what it pulls in (go mod graph).
-// Unlike importWhy it does not stop at 1st-class code — it keeps descending until the budget.
-func importDeps(m string, importees map[string]map[string]bool, c *classification, budget int) *ImportNode {
-	return importTree(m, importees, c, budget, false)
+	return importTree(m, importers, c, budget, whyBreadth, true)
 }
 
 // attachPlanWhy fills in the import-why tree for each pruned module and every non-stdlib

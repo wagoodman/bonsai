@@ -50,6 +50,7 @@ type graphSpec struct {
 	imports map[string][]string // package import path -> imported package paths
 	roots   []string            // entrypoint package import paths
 	size    map[string]uint64   // package import path -> attributed bytes
+	goVer   map[string]string   // module path -> declared `go` directive (optional)
 }
 
 func (s graphSpec) build() *buildGraph {
@@ -66,7 +67,7 @@ func (s graphSpec) build() *buildGraph {
 		g.moduleOfPkg[pkg] = mod
 		if mod != "" {
 			if _, ok := g.allModules[mod]; !ok {
-				g.allModules[mod] = &listModule{Path: mod}
+				g.allModules[mod] = &listModule{Path: mod, GoVersion: s.goVer[mod]}
 			}
 		}
 	}

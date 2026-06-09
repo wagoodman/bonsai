@@ -35,6 +35,47 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "…/long/path", truncate("github.com/very/long/path", 11))
 }
 
+func TestPruneAloneLine(t *testing.T) {
+	// shared deps held back: say both — frees the net, of the gross, with the held remainder.
+	shared := pruneAloneLine(bonsai.Detail{Target: true, Exclusive: 1500, PullsIn: 1800})
+	assert.Contains(t, shared, "frees")
+	assert.Contains(t, shared, "pulled in")
+	assert.Contains(t, shared, "held by others")
+
+	// fully exclusive: no shared remainder to explain.
+	excl := pruneAloneLine(bonsai.Detail{Target: true, Exclusive: 1800, PullsIn: 1800})
+	assert.Contains(t, excl, "nothing shared")
+
+	// non-candidate: no prune-alone figure to report.
+	assert.Contains(t, pruneAloneLine(bonsai.Detail{Target: false}), "not a candidate")
+}
+
+func TestWhyTreeInversion(t *testing.T) {
+	// reverse importer tree from the Session: target X, imported by a, imported by you (1st).
+	root := &bonsai.ImportNode{Module: "X", Class: "3rd", Via: []*bonsai.ImportNode{
+		{Module: "a", Class: "2nd", Via: []*bonsai.ImportNode{
+			{Module: "you", Class: "1st"},
+		}},
+	}}
+
+	var paths [][]wnode
+	collectWhyPaths(root, nil, &paths)
+	trie := &whyTrie{}
+	for _, p := range paths {
+		trie.insert(p)
+	}
+	lines := renderWhyTrie(trie, "", 80, "X")
+
+	require.Len(t, lines, 3)
+	// go-mod-why order: consumer at the top, target at the bottom, marked.
+	assert.Contains(t, lines[0], "you")
+	assert.Contains(t, lines[1], "a")
+	assert.Contains(t, lines[2], "X")
+	assert.Contains(t, lines[2], "this module")
+	// the consumer line uses a tree connector.
+	assert.Contains(t, lines[0], "─")
+}
+
 func TestStyleByClass(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI) // force styling even without a TTY in tests
 
@@ -45,6 +86,138 @@ func TestStyleByClass(t *testing.T) {
 	assert.NotEqual(t, plain, gold, "1st-class is styled")
 	assert.NotEqual(t, plain, grey, "locked is styled")
 	assert.NotEqual(t, gold, grey, "gold and grey differ")
+}
+
+func TestSortByGoMin(t *testing.T) {
+	m := model{
+		all: []bonsai.Module{
+			{Module: "low", Target: true, GoVersion: "1.13", Size: 100},
+			{Module: "high", Target: true, GoVersion: "1.24.0", Size: 50},
+			{Module: "oldest", Target: true, GoVersion: "1.9", Size: 200},
+			{Module: "none", Target: true, GoVersion: "", Size: 999}, // no directive sinks to the bottom
+		},
+		sortMode: sortGo,
+	}
+	m.rebuildVisible()
+
+	got := make([]string, len(m.visible))
+	for i, mod := range m.visible {
+		got[i] = mod.Module
+	}
+	// highest declared go minimum first (version-aware, so 1.13 outranks 1.9); no-directive last.
+	assert.Equal(t, []string{"high", "low", "oldest", "none"}, got)
+}
+
+func TestGoVerCell(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+
+	plain, styled := goVerCell(bonsai.Module{GoVersion: "1.24.0"}, true)
+	assert.Contains(t, plain, glyphFloor+"1.24.0", "pinner is △-flagged")
+	assert.NotEqual(t, plain, styled, "pinner cell is styled")
+
+	plain, _ = goVerCell(bonsai.Module{GoVersion: "1.18"}, false)
+	assert.Contains(t, plain, "1.18")
+	assert.NotContains(t, plain, glyphFloor, "non-pinner has no flag")
+
+	plain, _ = goVerCell(bonsai.Module{GoVersion: ""}, false)
+	assert.Contains(t, plain, "—", "no directive renders an em-dash")
+}
+
+func TestFloorBar(t *testing.T) {
+	tests := []struct {
+		name      string
+		goFloor   bonsai.GoFloor
+		baseFloor bonsai.GoFloor
+		want      []string // substrings expected in the rendered bar
+		absent    []string
+	}{
+		{
+			name:    "no dependency floor",
+			goFloor: bonsai.GoFloor{},
+			want:    []string{"go floor: none"},
+		},
+		{
+			name:      "steady floor names version and pin count",
+			goFloor:   bonsai.GoFloor{Version: "1.24.0", Critical: []string{"a", "b"}},
+			baseFloor: bonsai.GoFloor{Version: "1.24.0", Critical: []string{"a", "b"}},
+			want:      []string{"go ≥ 1.24.0", glyphFloor + "2 pinning"},
+			absent:    []string{"→"},
+		},
+		{
+			name:      "pruning shows the floor dropping from the baseline",
+			goFloor:   bonsai.GoFloor{Version: "1.21", Critical: []string{"c"}},
+			baseFloor: bonsai.GoFloor{Version: "1.24.0", Critical: []string{"a"}},
+			want:      []string{"1.24.0", "→", "1.21", glyphFloor + "1 pinning"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := model{goFloor: tt.goFloor, baseFloor: tt.baseFloor}
+			got := stripStyle(m.floorBar())
+			for _, w := range tt.want {
+				assert.Contains(t, got, w)
+			}
+			for _, a := range tt.absent {
+				assert.NotContains(t, got, a)
+			}
+		})
+	}
+}
+
+func TestGoDirectiveLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		detail  bonsai.Detail
+		floor   bonsai.GoFloor
+		pins    bool
+		want    string
+		notWant string
+	}{
+		{
+			name:   "no directive declared",
+			detail: bonsai.Detail{Module: "x", GoVersion: ""},
+			want:   "none declared",
+		},
+		{
+			name:   "owned module is the user's to set",
+			detail: bonsai.Detail{Module: "x", Class: "1st", Controlled: true, GoVersion: "1.26.0"},
+			floor:  bonsai.GoFloor{Version: "1.24.0"},
+			want:   "yours",
+		},
+		{
+			name:   "sole pinner names the version it would drop to",
+			detail: bonsai.Detail{Module: "x", Class: "2nd", GoVersion: "1.24.0"},
+			floor:  bonsai.GoFloor{Version: "1.24.0", Critical: []string{"x"}, NextVersion: "1.22"},
+			pins:   true,
+			want:   "pins go floor 1.24.0 (→ 1.22 if pruned)",
+		},
+		{
+			name:   "one of several pinners",
+			detail: bonsai.Detail{Module: "x", Class: "2nd", GoVersion: "1.24.0"},
+			floor:  bonsai.GoFloor{Version: "1.24.0", Critical: []string{"x", "y"}},
+			pins:   true,
+			want:   "1 of 2 pinning go floor 1.24.0",
+		},
+		{
+			name:   "below the floor is harmless",
+			detail: bonsai.Detail{Module: "x", Class: "2nd", GoVersion: "1.18"},
+			floor:  bonsai.GoFloor{Version: "1.24.0", Critical: []string{"y"}},
+			want:   "below floor go ≥ 1.24.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := model{goFloor: tt.floor, floorPins: map[string]bool{}}
+			if tt.pins {
+				m.floorPins[tt.detail.Module] = true
+			}
+			got := stripStyle(m.goDirectiveLine(tt.detail))
+			assert.Contains(t, got, tt.want)
+			if tt.notWant != "" {
+				assert.NotContains(t, got, tt.notWant)
+			}
+		})
+	}
 }
 
 // integration: build a real session for the bonsai module and exercise the model's render and
@@ -66,6 +239,8 @@ func TestModelRenderAndToggle(t *testing.T) {
 	view := m.View()
 	assert.Contains(t, view, "binary", "summary bar present")
 	assert.Contains(t, view, "Candidates", "list header present")
+	assert.Contains(t, stripStyle(view), "go ≥", "go-version floor shown in the bar")
+	assert.NotEmpty(t, m.baseFloor.Version, "baseline go floor computed")
 
 	// everything starts in the binary (checked), so nothing is pruned yet.
 	assert.Zero(t, m.whatif.FreedBytes, "baseline prunes nothing")
@@ -103,6 +278,39 @@ func TestModelRenderAndToggle(t *testing.T) {
 	locked, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	m = locked.(model)
 	assert.Less(t, m.candidateCount(), beforeCount, "locking a module via the UI removes it as a candidate")
+
+	// fuzzy filter narrows the list.
+	before := len(m.visible)
+	slash, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = slash.(model)
+	require.True(t, m.filtering, "/ enters filter mode")
+	for _, r := range "yaml" {
+		k, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = k.(model)
+	}
+	assert.NotEmpty(t, m.visible)
+	assert.Less(t, len(m.visible), before, "fuzzy filter narrows the list")
+	esc, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = esc.(model)
+	assert.False(t, m.filtering, "esc exits filter")
+
+	// tab focuses the detail pane; space there expands a dep's importers.
+	tab, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = tab.(model)
+	assert.Equal(t, focusDetail, m.focus, "tab moves focus to the detail pane")
+	if len(m.dragStatus) > 0 {
+		// move to a shared dep (has importers) then expand it.
+		for m.detailCursor < len(m.dragStatus)-1 && len(m.dragStatus[m.detailCursor].NeededBy) == 0 {
+			dn, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			m = dn.(model)
+		}
+		exp, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+		m = exp.(model)
+		assert.NotEmpty(t, m.expanded, "space in the detail pane expands importers")
+	}
+	if os.Getenv("BONSAI_TUI_PREVIEW") != "" {
+		os.Stdout.WriteString("\n" + m.View() + "\n")
+	}
 }
 
 // repoRoot walks up from the test working directory to the module root (the dir whose go.mod

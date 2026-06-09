@@ -2,6 +2,13 @@ package bonsai
 
 import "sort"
 
+// detailTree* are the generous bounds for the explorer's scrollable why/deps trees — large
+// enough to show everything on real graphs (the trees dedup globally, so this stays finite).
+const (
+	detailTreeBudget  = 2000
+	detailTreeBreadth = 1000
+)
+
 // Session is a live analysis model for interactive exploration (the `explore` TUI). The
 // expensive, immutable data — the built binary, its size attribution, the import graph, and
 // coupling — is computed once. The classification "view" (which modules are controlled,
@@ -99,6 +106,7 @@ type Module struct {
 	Target     bool   // a selectable prune candidate
 	Size       uint64 // attributed bytes in the binary
 	Exclusive  uint64 // bytes freed by pruning this alone (dominator retained size)
+	GoVersion  string // the module's declared `go` directive (go.mod), if any
 	Coupling   Coupling
 	Importers  int // distinct modules that import it (fan-in)
 }
@@ -120,6 +128,7 @@ func (s *Session) Modules() []Module {
 			Target:     s.cls.isTarget(mod),
 			Size:       sz,
 			Exclusive:  s.dom.exclusiveBytes(mod),
+			GoVersion:  s.g.goVersionOf(mod),
 			Importers:  len(s.importers[mod]),
 		}
 		if c := s.coupling[mod]; c != nil {
@@ -177,6 +186,15 @@ func (s *Session) WhatIf(selected map[string]bool) WhatIf {
 	}
 }
 
+// GoFloor reports the dep-imposed minimum Go version for the owned modules given the current
+// prune selection: as targets are selected, the modules they orphan leave the build and the
+// floor can drop. The Critical modules are the surviving non-owned modules pinning it — the
+// answer to "which dependencies are why my go directive can't go lower right now".
+func (s *Session) GoFloor(selected map[string]bool) GoFloor {
+	surviving := s.ri.reachedModules(s.cut(selected))
+	return s.g.goFloor(surviving, s.cls)
+}
+
 // Marginal is the extra bytes freed by adding module to the current selection — the live
 // "+X MB if I also drop this" number that shrinks as shared weight gets claimed.
 func (s *Session) Marginal(selected map[string]bool, module string) uint64 {
@@ -199,7 +217,9 @@ type Detail struct {
 	Target     bool
 	Size       uint64
 	Own        uint64        // the module's own code among its exclusive savings
-	Exclusive  uint64        // freed by pruning it alone
+	Exclusive  uint64        // freed by pruning it alone (net: shared deps don't count)
+	PullsIn    uint64        // gross weight of everything it reaches (incl. shared deps that stay)
+	GoVersion  string        // the module's declared `go` directive (go.mod), if any
 	DragOut    []FreedModule // other modules freed with it (its exclusive subtree), largest first
 	Coupling   Coupling
 	Importers  int
@@ -218,12 +238,36 @@ func (s *Session) Detail(module string) Detail {
 		Target:     s.cls.isTarget(module),
 		Size:       s.moduleSz[module],
 		Exclusive:  s.dom.exclusiveBytes(module),
+		GoVersion:  s.g.goVersionOf(module),
 		Importers:  len(s.importers[module]),
-		Why:        importWhy(module, s.importers, s.cls, whyBudget),
-		Deps:       importDeps(module, s.importees, s.cls, whyBudget),
+		// the explorer's panes scroll, so build the full trees (not the report's bounded view);
+		// global dedup keeps them finite.
+		Why:  importTree(module, s.importers, s.cls, detailTreeBudget, detailTreeBreadth, true),
+		Deps: importTree(module, s.importees, s.cls, detailTreeBudget, detailTreeBreadth, false),
 	}
 	if c := s.coupling[module]; c != nil {
 		d.Coupling = *c
+	}
+
+	// pruning this module alone frees Exclusive; the modules it also reaches that survive (held
+	// by other importers) make up the rest of what it pulls in. PullsIn = Exclusive + held, so
+	// the UI can show both "frees X" and "of Y pulled in (Y−X held by others)" and always have
+	// them reconcile. Std is excluded from held — it's shared by everything and never the story.
+	if d.Target {
+		survivors := s.ri.reachedModules(s.cut(map[string]bool{module: true}))
+		var held uint64
+		seen := map[string]bool{}
+		for ip := range s.g.reachableFromModule(module) {
+			dep := s.g.moduleOfPkg[ip]
+			if !s.base[ip] || dep == "" || dep == module || seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			if survivors[dep] { // still reachable without this module's edges → shared, stays
+				held += s.moduleSz[dep]
+			}
+		}
+		d.PullsIn = d.Exclusive + held
 	}
 
 	// split the exclusive subtree into the module's own bytes vs the deps it drags out.
