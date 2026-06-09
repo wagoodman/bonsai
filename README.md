@@ -58,6 +58,25 @@ something buildable. Already have a built binary? `bonsai --binary ./mything`.
 
 Want JSON or markdown instead of the table? `--output json` / `--output markdown`.
 
+## Explore it interactively
+
+The table is the quick read. When you want to actually *try* prunes and watch them
+interact, there's a TUI:
+
+```sh
+bonsai explore .          # takes the same flags: --controlled, --ignore, --unlock
+```
+
+Everything in your binary starts checked. Uncheck a dependency and the header shows
+the new projected size right away; the side panes show what that module **drags out**
+with it (and what survives, because something else still needs it), and *why* it's in
+the build in the first place. You can re-classify modules on the fly — control them,
+lock them, unlock them — and watch the candidate set move.
+
+It's read-only: nothing is changed on disk, and your selection is remembered per
+target between runs. **Press `?` for the full legend** — what the `M`/`1`/`2`/`3`/`L`
+classes mean, the glyphs, the panes, and the keys.
+
 ## The one knob worth knowing
 
 By default bonsai assumes the only code you can edit is your main module — so the only things
@@ -79,6 +98,25 @@ A few more, briefly:
 - `--blame` — split each dependency's fair share of the shared weight, so the numbers add up
   to the real total instead of crediting shared deps to nobody (the Shapley value, from
   cooperative game theory).
+
+### How bonsai sorts your dependencies
+
+That one knob is really about *classifying* your graph, and the whole report — and the
+`explore` TUI's `M`/`1`/`2`/`3`/`L` column — is organized around four buckets:
+
+- **1st-class** — code you control: your main module, plus anything matched by
+  `--controlled`. bonsai never prunes these; it looks for imports it can cut *out of* them.
+- **2nd-class** — a dependency your 1st-class code imports directly. These are the actual
+  prune **candidates** — the imports you could realistically stop writing.
+- **3rd-class** — a dependency reached only *through* other dependencies, never from your
+  own code. You can't drop it directly; it leaves only when whatever pulls it in leaves.
+  (This is most of your graph.)
+- **locked** — off-limits, never suggested. Everything 1st-class is locked from being
+  dropped by default; `--ignore` locks more, and `--unlock` re-opens one of your own
+  modules as fair game to remove wholesale.
+
+So widening `--controlled` promotes a whole layer of 3rd-class deps into 2nd-class
+candidates — which is exactly why the real savings tend to hide a level or two down.
 
 ## The fine print
 

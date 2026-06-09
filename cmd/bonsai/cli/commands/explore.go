@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
 
 	"github.com/wagoodman/bonsai/bonsai"
@@ -15,7 +17,12 @@ import (
 // Explore is the `bonsai explore` command: an interactive prune explorer. It is a plain cobra
 // command (not wired through clio) so its full-screen TUI owns stdin without the progress
 // event-loop UI contending for it. The build/analysis runs first with simple stderr status.
-func Explore() *cobra.Command {
+func Explore(id clio.Identification) *cobra.Command {
+	// the TUI shows "bonsai · <version>" in its status bar; hide the dev-build placeholder.
+	version := id.Version
+	if strings.HasPrefix(version, "[") {
+		version = ""
+	}
 	var (
 		target     string
 		binary     string
@@ -30,8 +37,9 @@ func Explore() *cobra.Command {
 			"deselect the ones you need with space. The summary bar shows the projected binary size and how " +
 			"many modules actually get pruned; the right panes show what the highlighted module drags out " +
 			"(and what survives, held by others) and why it's in the build. Your selection and per-module " +
-			"class/lock choices are remembered per scanned module across runs. Read-only — enter prints the " +
-			"chosen prune set.",
+			"class/lock choices are remembered per scanned module across runs. Press ? inside for the full " +
+			"legend — the 1st/2nd/3rd-class model, locked/unlocked, the panes, and the keys. Read-only — " +
+			"enter prints the chosen prune set.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			dir := "."
@@ -45,7 +53,7 @@ func Explore() *cobra.Command {
 				Controlled: controlled,
 				Locked:     locked,
 				Unlock:     unlock,
-			})
+			}, version)
 		},
 	}
 	flags := cmd.Flags()
@@ -57,7 +65,7 @@ func Explore() *cobra.Command {
 	return cmd
 }
 
-func runExplore(cfg bonsai.Config) error {
+func runExplore(cfg bonsai.Config, version string) error {
 	fmt.Fprintln(os.Stderr, "building and analyzing… (this can take a few seconds)")
 	session, err := bonsai.NewSession(cfg)
 	if err != nil {
@@ -71,7 +79,7 @@ func runExplore(cfg bonsai.Config) error {
 		initial.Inputs = session.Inputs() // first run: seed from flags
 	}
 
-	res, err := prunetui.Run(session, initial)
+	res, err := prunetui.Run(session, initial, version)
 	if err != nil {
 		return err
 	}

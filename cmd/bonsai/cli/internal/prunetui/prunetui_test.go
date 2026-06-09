@@ -51,6 +51,8 @@ func TestPruneAloneLine(t *testing.T) {
 }
 
 func TestWhyTreeInversion(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI) // force styling so the target's purple marker is visible
+
 	// reverse importer tree from the Session: target X, imported by a, imported by you (1st).
 	root := &bonsai.ImportNode{Module: "X", Class: "3rd", Via: []*bonsai.ImportNode{
 		{Module: "a", Class: "2nd", Via: []*bonsai.ImportNode{
@@ -67,11 +69,14 @@ func TestWhyTreeInversion(t *testing.T) {
 	lines := renderWhyTrie(trie, "", 80, "X")
 
 	require.Len(t, lines, 3)
-	// go-mod-why order: consumer at the top, target at the bottom, marked.
+	// go-mod-why order: consumer at the top, target (the selected module) at the bottom.
 	assert.Contains(t, lines[0], "you")
 	assert.Contains(t, lines[1], "a")
 	assert.Contains(t, lines[2], "X")
-	assert.Contains(t, lines[2], "this module")
+	// the target is highlighted purple, tying it back to the left-pane selection; the importers
+	// above it are not.
+	assert.Contains(t, lines[2], styPurple.Render("X"), "the target module is purple")
+	assert.NotContains(t, lines[0], styPurple.Render("you"), "importers are not purple")
 	// the consumer line uses a tree connector.
 	assert.Contains(t, lines[0], "─")
 }
@@ -218,6 +223,64 @@ func TestGoDirectiveLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHelpOverlay(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+
+	// a terminal tall enough to show the whole legend at once.
+	m := model{termW: 90, termH: 48}
+
+	// ? opens the overlay; the view becomes the legend, not the explorer body.
+	opened, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = opened.(model)
+	require.True(t, m.showHelp, "? opens the help overlay")
+
+	view := stripStyle(m.View())
+	// the legend covers every concept the user needs to discover.
+	for _, want := range []string{
+		"help",
+		"1st-class", "2nd-class", "3rd-class", "locked",
+		"prune candidates",
+		"prune-alone", "retained",
+		"go mod why",
+		"go floor",
+		"controlled", "unlock",
+	} {
+		assert.Contains(t, view, want, "help overlay explains %q", want)
+	}
+	if os.Getenv("BONSAI_TUI_PREVIEW") != "" {
+		os.Stdout.WriteString("\n" + m.View() + "\n")
+	}
+
+	// scrolling up at the top clamps to 0 and doesn't dismiss.
+	up, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = up.(model)
+	assert.True(t, m.showHelp)
+	assert.Zero(t, m.helpOffset, "scrolling up at the top clamps to 0")
+
+	// esc closes it again rather than quitting the program.
+	closed, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = closed.(model)
+	assert.False(t, m.showHelp, "esc closes the overlay")
+	assert.Nil(t, cmd, "esc out of help does not quit")
+}
+
+func TestHelpOverlayScrolls(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+
+	// a short terminal can't show the whole legend, so the last sections are below the fold...
+	m := model{termW: 90, termH: 20, showHelp: true}
+	top := stripStyle(m.View())
+	assert.Contains(t, top, "/", "a partial view shows the [from–to/total] scroll marker")
+	assert.NotContains(t, top, "unlock", "the Reclassify/Keys sections start below the fold")
+
+	// ...until you page down to them.
+	for range 10 {
+		next, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyPgDown})
+		m = next.(model)
+	}
+	assert.Contains(t, stripStyle(m.View()), "unlock", "paging down reveals the lower sections")
 }
 
 // integration: build a real session for the bonsai module and exercise the model's render and

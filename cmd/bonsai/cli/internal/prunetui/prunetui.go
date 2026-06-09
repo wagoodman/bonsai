@@ -20,16 +20,22 @@ import (
 )
 
 var (
-	styBar   = lipgloss.NewStyle().Bold(true)
-	styHelp  = lipgloss.NewStyle().Faint(true)
-	styDim   = lipgloss.NewStyle().Faint(true)
-	styGold  = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class (yours)
-	styGood  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow: go-floor pinners
-	styCyan  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	styHead  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styRow   = lipgloss.NewStyle().Reverse(true)
-	styFocus = lipgloss.NewStyle().Bold(true).Reverse(true)
+	styBar    = lipgloss.NewStyle().Bold(true)
+	styHelp   = lipgloss.NewStyle().Faint(true)
+	styDim    = lipgloss.NewStyle().Faint(true)
+	styGold   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class (yours)
+	styGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow: go-floor pinners
+	styCyan   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	styPurple = lipgloss.NewStyle().Foreground(lipgloss.Color("135")) // selection / the module matched elsewhere
+	styRow    = lipgloss.NewStyle().Reverse(true).Foreground(lipgloss.Color("135"))
+
+	// the panes split with a grey vertical line and a grey-background header bar (not a ─ rule):
+	// both are grey so the line meets the bar at a clean junction instead of the characters crossing.
+	styDivide  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))                                            // vertical rule
+	styHeadBar = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Background(lipgloss.Color("237"))  // header bar
+	styFocus   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("240")) // focused pane: lighter bar, bright title
 )
 
 const (
@@ -68,16 +74,19 @@ type Result struct {
 	State     State
 }
 
-// Run launches the explorer and returns the chosen prune set plus the state to persist.
-func Run(s *bonsai.Session, initial State) (Result, error) {
-	res, err := tea.NewProgram(newModel(s, initial), tea.WithAltScreen()).Run()
+// Run launches the explorer and returns the chosen prune set plus the state to persist. version is
+// shown in the status bar corner (empty to hide it).
+func Run(s *bonsai.Session, initial State, version string) (Result, error) {
+	m := newModel(s, initial)
+	m.version = version
+	res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if err != nil {
 		return Result{}, err
 	}
-	m := res.(model)
-	out := Result{Confirmed: m.confirmed, State: State{Pruned: keys(m.pruned), Inputs: m.inputs}}
-	if m.confirmed {
-		out.Pruned = m.whatif.PrunedModules
+	final := res.(model)
+	out := Result{Confirmed: final.confirmed, State: State{Pruned: keys(final.pruned), Inputs: final.inputs}}
+	if final.confirmed {
+		out.Pruned = final.whatif.PrunedModules
 	}
 	return out, nil
 }
@@ -114,6 +123,10 @@ type model struct {
 	baseFloor bonsai.GoFloor  // go floor with nothing pruned (to show how far pruning moves it)
 	floorPins map[string]bool // surviving modules pinning the current floor (Critical, for row marking)
 
+	showHelp   bool // the ? overlay is open
+	helpOffset int  // scroll position within the help overlay
+
+	version   string // shown in the status bar corner
 	confirmed bool
 }
 
@@ -260,8 +273,18 @@ func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" { // hard quit, even out of the help overlay
+		return m, tea.Quit
+	}
+	if m.showHelp {
+		return m.updateHelp(msg)
+	}
 	switch msg.String() {
-	case "ctrl+c", "esc", "q":
+	case "?":
+		m.showHelp = true
+		m.helpOffset = 0
+		return m, nil
+	case "esc", "q":
 		return m, tea.Quit
 	case "enter":
 		m.confirmed = true
@@ -351,6 +374,24 @@ func (m model) updateWhy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.whyOffset = max(0, m.whyOffset-5)
 	case "pgdown":
 		m.whyOffset += 5
+	}
+	return m, nil
+}
+
+// updateHelp handles keys while the ? overlay is open: scroll the legend or dismiss it. Nothing
+// leaks through to the explorer underneath, so esc/q close the help instead of quitting.
+func (m model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "?", "enter":
+		m.showHelp = false
+	case "up", "k":
+		m.helpOffset = max(0, m.helpOffset-1)
+	case "down", "j":
+		m.helpOffset++
+	case "pgup":
+		m.helpOffset = max(0, m.helpOffset-5)
+	case "pgdown":
+		m.helpOffset += 5
 	}
 	return m, nil
 }
@@ -486,12 +527,15 @@ func (m model) layout() (leftW, rightW, bodyH, detailH, whyH int) {
 
 func (m model) listH() int {
 	_, _, bodyH, _, _ := m.layout()
-	return max(1, bodyH-1)
+	return max(1, bodyH-2) // title bar + column header
 }
 
 // View
 
 func (m model) View() string {
+	if m.showHelp {
+		return m.viewHelpOverlay()
+	}
 	leftW, rightW, bodyH, detailH, whyH := m.layout()
 
 	left := pad(m.viewList(leftW), leftW, bodyH)
@@ -499,7 +543,7 @@ func (m model) View() string {
 	why := renderPane("Why it's here  (go mod why)", m.whyBody(rightW), m.whyOffset, rightW, whyH, m.focus == focusWhy)
 	right := lipgloss.JoinVertical(lipgloss.Left, detail, why)
 
-	divider := styDim.Render(strings.TrimRight(strings.Repeat("│\n", bodyH), "\n"))
+	divider := styDivide.Render(strings.TrimRight(strings.Repeat("│\n", bodyH), "\n"))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
 
 	parts := []string{m.viewBar()}
@@ -547,7 +591,7 @@ func (m model) viewList(width int) string {
 		scope = "All modules"
 	}
 	title := fmt.Sprintf("%s · %s", scope, sortLabel(m.sortMode))
-	lines := []string{headerFor(title, width, m.focus == focusList)}
+	lines := []string{headerFor(title, width, m.focus == focusList), m.listCols(width)}
 	h := m.listH()
 	end := min(m.offset+h, len(m.visible))
 	for i := m.offset; i < end; i++ {
@@ -583,6 +627,17 @@ func (m model) viewList(width int) string {
 		lines = append(lines, fmt.Sprintf("%s %s %8s  %s %s", boxR, classTag(mod), humize(val), goStyled, name))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// listCols renders the column-header row, aligned to the same widths as the rows above
+// (box · class · value · go · module). The value column tracks the sort: prune-value vs raw size.
+func (m model) listCols(width int) string {
+	valHdr := "size"
+	if m.sortMode == sortPrune {
+		valHdr = "prune"
+	}
+	cols := fmt.Sprintf("%s %s %8s  %-7s %s", " ", " ", valHdr, "go min", "module")
+	return styDim.Render(fit(cols, width))
 }
 
 // detailBody returns the scrollable lines of the details pane (module info + what it pulls in,
@@ -747,11 +802,13 @@ func renderWhyTrie(t *whyTrie, prefix string, width int, target string) []string
 			branch, cont = "└─ ", "   "
 		}
 		gold := kid.class == "1st" || kid.class == "main"
-		name := classStyle(kid.class, gold, false, truncate(kid.mod, width-len(prefix)-8))
-		tag := styDim.Render(" " + kid.class)
+		label := truncate(kid.mod, width-len(prefix)-8)
+		name := classStyle(kid.class, gold, false, label)
+		// the selected module is shown purple here too, tying it back to the left-pane selection.
 		if kid.mod == target {
-			tag = styGood.Render(" ◂ this module")
+			name = styPurple.Render(label)
 		}
+		tag := styDim.Render(" " + kid.class)
 		out = append(out, prefix+styDim.Render(branch)+name+tag)
 		out = append(out, renderWhyTrie(kid, prefix+cont, width, target)...)
 	}
@@ -759,14 +816,100 @@ func renderWhyTrie(t *whyTrie, prefix string, width int, target string) []string
 }
 
 func (m model) viewHelp() string {
+	var left string
 	switch m.focus {
 	case focusDetail:
-		return styHelp.Render("DETAIL · ↑/↓ dep · space expand importers · tab next pane · q cancel")
+		left = styHelp.Render("DETAIL · ↑/↓ dep · space expand importers · tab next pane · ? help · q cancel")
 	case focusWhy:
-		return styHelp.Render("WHY · ↑/↓ scroll · tab next pane · q cancel")
+		left = styHelp.Render("WHY · ↑/↓ scroll · tab next pane · ? help · q cancel")
 	default:
-		return styHelp.Render("↑/↓ move · space prune · / filter · a all · s sort · c/l/u class · tab panes · enter apply · q quit") +
-			styDim.Render("   "+glyphFloor+" pins go floor")
+		left = styHelp.Render("↑/↓ move · space prune · / filter · a all · s sort · c/l/u class · tab panes · enter apply · q quit") +
+			styDim.Render("   "+glyphFloor+" pins go floor · ") + styHelp.Render("? help")
+	}
+	if m.version == "" {
+		return left
+	}
+	// pin "bonsai · <version>" to the bottom-right corner; drop it if the terminal is too narrow.
+	right := styDim.Render("bonsai · " + m.version)
+	gap := m.termW - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 2 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// viewHelpOverlay renders the ? help: the summary bar stays for orientation, a centered card
+// explains the classes / glyphs / panes / keys, and a dismiss hint sits at the bottom.
+func (m model) viewHelpOverlay() string {
+	bodyH := max(6, m.termH-2)
+	card := m.helpCard(bodyH)
+	body := lipgloss.Place(m.termW, bodyH, lipgloss.Center, lipgloss.Center, card)
+	hint := styHelp.Render("? or esc to close · ↑/↓ scroll")
+	return strings.Join([]string{m.viewBar(), body, hint}, "\n")
+}
+
+// helpCard builds the bordered, scrollable legend box. The title stays pinned; only the legend
+// body scrolls (helpOffset), with a [from–to/total] marker when it doesn't all fit.
+func (m model) helpCard(maxH int) string {
+	lines := helpLines()
+	avail := clamp(maxH-4, 4, len(lines)) // reserve border(2) + title + blank
+	off := clamp(m.helpOffset, 0, max(0, len(lines)-avail))
+	end := min(off+avail, len(lines))
+
+	title := styHead.Render("bonsai prune explorer — help")
+	if len(lines) > avail {
+		title += styDim.Render(fmt.Sprintf("   [%d–%d/%d]", off+1, end, len(lines)))
+	}
+	content := strings.Join(append([]string{title, ""}, lines[off:end]...), "\n")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
+		Padding(0, 2).
+		Render(content)
+}
+
+// helpLines is the legend content. It reuses the live UI's styles and glyph constants so the
+// colors and symbols here match exactly what's on screen.
+func helpLines() []string {
+	dim := styDim.Render
+	head := styHead.Render
+	return []string{
+		"Everything in the binary starts checked — prune by unchecking,",
+		dim("and the projected binary size updates live."),
+		"",
+		head("The class column   M  1  2  3  L"),
+		styGold.Render("M") + "  main module — your entrypoint; always yours to edit",
+		styGold.Render("1") + "  1st-class — code you control (" + dim("main + --controlled") + ")",
+		dim("    bonsai cuts imports OUT of these; they're never pruned"),
+		styCyan.Render("2") + "  2nd-class — a dep your controlled code imports directly",
+		"    " + styGood.Render("← these are the prune candidates"),
+		dim("3") + "  3rd-class — reached only via other deps, not your code",
+		dim("    can't cut directly; it leaves only when its importer does"),
+		dim("L") + "  locked — never offered for pruning (1st-class by default)",
+		"",
+		head("Glyphs"),
+		styGood.Render(glyphIn) + " in binary    " + glyphOut + " pruned    " + dim(glyphNone) + " not a candidate",
+		styWarn.Render(glyphFloor) + " pins the go floor — the lowest go version your modules",
+		dim("  can require; prune its pinners to lower it"),
+		"",
+		head("Details pane   (Tab to focus · Space expands a dep)"),
+		"size / own   total reachable bytes vs this module's own code",
+		"prune-alone  bytes freed if you prune ONLY this — its retained",
+		dim("             size, not its gross; shared weight stays behind"),
+		"pulls in     what leaves (" + glyphOut + ") vs survives (" + styGood.Render(glyphIn) + ", held by others)",
+		"",
+		head("Why it's here   (go mod why)"),
+		"the import path from your code down to this module — shows",
+		dim("which import to drop to make it actually leave"),
+		"",
+		head("Reclassify live"),
+		styCyan.Render("c") + "  controlled — mark a module 1st-class (cut its imports)",
+		styCyan.Render("l") + "  locked     — protect from / expose to pruning",
+		styCyan.Render("u") + "  unlock     — drop one of your own modules wholesale",
+		"",
+		head("Keys"),
+		dim("↑/↓") + " move   " + dim("space") + " prune   " + dim("/") + " filter   " + dim("a") + " all/candidates",
+		dim("s") + " sort   " + dim("Tab") + " panes   " + dim("enter") + " apply   " + dim("q") + " quit   " + dim("?") + " help",
 	}
 }
 
@@ -888,22 +1031,26 @@ func renderPane(title string, body []string, offset, w, h int, focused bool) str
 	}
 	more := ""
 	if len(body) > avail {
-		more = styDim.Render(fmt.Sprintf("  [%d–%d/%d]", offset+1, end, len(body)))
+		// plain text: it rides the header bar's grey background, so no embedded style/reset.
+		more = fmt.Sprintf("  [%d–%d/%d]", offset+1, end, len(body))
 	}
 	lines := append([]string{headerFor(title+more, w, focused)}, visible...)
 	return pad(strings.Join(lines, "\n"), w, h)
 }
 
+// headerFor renders a pane title as a filled grey bar across the row (not a ─ rule), so it meets
+// the grey vertical divider at a clean junction. The bar fills the full width via the background.
 func headerFor(title string, width int, focused bool) string {
-	style := styHead
+	style := styHeadBar
 	if focused {
 		style = styFocus
 	}
-	rule := ""
-	if n := width - lipgloss.Width(title) - 1; n > 0 {
-		rule = " " + strings.Repeat("─", n)
+	s := " " + title
+	// keep it to one row; pad() truncates too, but Width() would wrap an over-long title first.
+	if r := []rune(s); width > 0 && len(r) > width {
+		s = string(r[:width])
 	}
-	return style.Render(title) + styDim.Render(rule)
+	return style.Width(width).Render(s)
 }
 
 func pad(s string, w, h int) string {
