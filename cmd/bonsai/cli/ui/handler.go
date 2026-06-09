@@ -10,7 +10,7 @@ import (
 	"github.com/anchore/bubbly"
 	"github.com/anchore/bubbly/bubbles/taskprogress"
 
-	"github.com/wagoodman/bonsai/bonsai/event"
+	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/log"
 )
 

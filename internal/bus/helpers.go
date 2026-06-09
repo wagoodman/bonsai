@@ -4,7 +4,7 @@ import (
 	"github.com/wagoodman/go-partybus"
 	"github.com/wagoodman/go-progress"
 
-	"github.com/wagoodman/bonsai/bonsai/event"
+	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/redact"
 )
 

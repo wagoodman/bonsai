@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wagoodman/bonsai/bonsai/event"
 	"github.com/wagoodman/bonsai/internal/bus"
+	"github.com/wagoodman/bonsai/internal/event"
 )
 
 // Config is the input to an analysis run.
@@ -385,15 +385,4 @@ func modulePathOf(dir string) string {
 		}
 	}
 	return ""
-}
-
-// shortModule returns the last path element of a module path, used as a friendly label.
-func shortModule(module string) string {
-	if module == "" {
-		return "main"
-	}
-	if i := strings.LastIndex(module, "/"); i >= 0 {
-		return module[i+1:]
-	}
-	return module
 }

@@ -9,9 +9,10 @@ import (
 
 	"github.com/anchore/clio"
 
-	"github.com/wagoodman/bonsai/bonsai"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/options"
+	"github.com/wagoodman/bonsai/internal/bonsai"
 	"github.com/wagoodman/bonsai/internal/bus"
+	"github.com/wagoodman/bonsai/internal/report"
 )
 
 // colorEnabled reports whether the table report should emit ANSI color: only when stdout is
@@ -96,11 +97,11 @@ func runAnalyze(opts *analyzeConfig) error {
 	buf := &strings.Builder{}
 	switch strings.ToLower(opts.Output) {
 	case formatTable:
-		err = bonsai.WriteTable(buf, an, opts.Top, colorEnabled())
+		err = report.WriteTable(buf, an, opts.Top, colorEnabled())
 	case formatMarkdown:
-		err = bonsai.WriteMarkdown(buf, an, opts.Top)
+		err = report.WriteMarkdown(buf, an, opts.Top)
 	case formatJSON:
-		err = bonsai.WriteJSON(buf, an)
+		err = report.WriteJSON(buf, an)
 	default:
 		err = fmt.Errorf("unknown format: %s", opts.Output)
 	}

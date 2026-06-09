@@ -16,7 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 
-	"github.com/wagoodman/bonsai/bonsai"
+	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
 var (
@@ -29,11 +29,13 @@ var (
 	styCyan   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	styPurple = lipgloss.NewStyle().Foreground(lipgloss.Color("135")) // selection / the module matched elsewhere
-	styRow    = lipgloss.NewStyle().Reverse(true).Foreground(lipgloss.Color("135"))
+	// cursor row: an explicit purple bar with bright text, rather than Reverse(true) (whose fg/bg
+	// swap over an unset background renders inconsistently across terminals).
+	styRow = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("135"))
 
 	// the panes split with a grey vertical line and a grey-background header bar (not a ─ rule):
 	// both are grey so the line meets the bar at a clean junction instead of the characters crossing.
-	styDivide  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))                                            // vertical rule
+	styDivide  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))                                             // vertical rule
 	styHeadBar = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Background(lipgloss.Color("237"))  // header bar
 	styFocus   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("240")) // focused pane: lighter bar, bright title
 )
@@ -115,6 +117,7 @@ type model struct {
 
 	termW, termH int
 
+	binSize    uint64 // original on-disk binary size (captured once; read by viewBar)
 	whatif     bonsai.WhatIf
 	detail     bonsai.Detail
 	dragStatus []bonsai.DepStatus
@@ -137,6 +140,7 @@ func newModel(s *bonsai.Session, initial State) model {
 
 	m := model{
 		s:        s,
+		binSize:  s.BinarySize(),
 		pruned:   map[string]bool{},
 		inputs:   initial.Inputs,
 		filter:   ti,
@@ -387,11 +391,11 @@ func (m model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.helpOffset = max(0, m.helpOffset-1)
 	case "down", "j":
-		m.helpOffset++
+		m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
 	case "pgup":
 		m.helpOffset = max(0, m.helpOffset-5)
 	case "pgdown":
-		m.helpOffset += 5
+		m.helpOffset = min(m.helpOffset+5, m.helpMaxOffset())
 	}
 	return m, nil
 }
@@ -508,8 +512,11 @@ func (m model) candidateCount() int {
 	return n
 }
 
-// layout splits the screen: the why pane floats to the bottom at its content height (capped),
-// leaving the rest to the details pane.
+// layout splits the screen: the why pane floats to the bottom at its content height, and the
+// detail pane (on top) takes the rest — so any slack falls between the two as blank in the detail
+// pane, keeping go-mod-why anchored at the bottom. Unlike a fixed half split, the why pane may
+// grow past half to use the space a short detail pane leaves (a long go-mod-why tree on a module
+// that pulls in little), but it never shrinks the detail pane below its own need / a fair half.
 func (m model) layout() (leftW, rightW, bodyH, detailH, whyH int) {
 	filterH := 0
 	if m.filtering {
@@ -520,7 +527,13 @@ func (m model) layout() (leftW, rightW, bodyH, detailH, whyH int) {
 	// so favor it slightly and let it scale with the terminal rather than capping it.
 	leftW = clamp(m.termW*55/100, 34, m.termW-28)
 	rightW = max(24, m.termW-leftW-1)
-	whyH = clamp(len(m.whyBody(rightW))+1, 2, bodyH/2)
+
+	// each pane wants its content height plus a header row. Size the why pane to its content but
+	// never let it eat into the detail pane's need (capped at a fair half when both overflow); the
+	// detail pane takes the remainder, floating the why pane to the bottom.
+	detailNeed := len(m.detailBody(rightW)) + 1
+	whyNeed := len(m.whyBody(rightW)) + 1
+	whyH = min(whyNeed, bodyH-min(detailNeed, bodyH/2))
 	detailH = bodyH - whyH
 	return
 }
@@ -562,7 +575,17 @@ func (m model) viewBar() string {
 		pct := float64(delta) / float64(max64(w.OriginalSize, 1)) * 100
 		saved = styGood.Render(fmt.Sprintf("−%s (−%.1f%%)", humize(delta), pct))
 	}
-	return styBar.Render(fmt.Sprintf("binary %s → %s", humize(w.OriginalSize), styGood.Render(humize(w.ProjectedSize)))) +
+
+	// size progression: the original binary on disk → the stripped baseline the what-if projects
+	// from (OriginalSize ≈ a `-s -w` release build) → the projected size after pruning. Surface the
+	// on-disk → stripped step only when stripping actually removes bytes; otherwise the input is
+	// already stripped and "original" and "stripped" are the same number.
+	pruned := styGood.Render(humize(w.ProjectedSize))
+	head := fmt.Sprintf("stripped %s → pruned %s", humize(w.OriginalSize), pruned)
+	if m.binSize > w.OriginalSize {
+		head = fmt.Sprintf("original %s → stripped %s → pruned %s", humize(m.binSize), humize(w.OriginalSize), pruned)
+	}
+	return styBar.Render(head) +
 		"  " + saved +
 		"  " + styDim.Render(fmt.Sprintf("· %d unchecked · %d modules removed", len(m.pruned), len(w.PrunedModules))) +
 		"  " + m.floorBar()
@@ -657,6 +680,9 @@ func (m model) detailBody(width int) []string {
 		m.goDirectiveLine(d),
 		"",
 		styHead.Render("pulls in  ") + styDim.Render(glyphIn+" in binary  "+glyphOut+" pruned · tab here, space expands"),
+	}
+	if len(m.dragStatus) == 0 {
+		return append(body, styDim.Render("no modules pulled in!"))
 	}
 	for i, st := range m.dragStatus {
 		label := st.Module
@@ -848,11 +874,24 @@ func (m model) viewHelpOverlay() string {
 	return strings.Join([]string{m.viewBar(), body, hint}, "\n")
 }
 
+// helpAvail is the number of legend rows that fit in a card of height maxH, reserving the
+// border(2) + title + blank. helpCard and helpMaxOffset both derive geometry from it so scrolling
+// and rendering agree on where the bottom is.
+func helpAvail(maxH int) int {
+	return clamp(maxH-4, 4, len(helpLines()))
+}
+
+// helpMaxOffset is the furthest the legend can scroll before the last row sits at the bottom, so
+// updateHelp can clamp helpOffset there instead of letting it drift past the end.
+func (m model) helpMaxOffset() int {
+	return max(0, len(helpLines())-helpAvail(max(6, m.termH-2)))
+}
+
 // helpCard builds the bordered, scrollable legend box. The title stays pinned; only the legend
 // body scrolls (helpOffset), with a [from–to/total] marker when it doesn't all fit.
 func (m model) helpCard(maxH int) string {
 	lines := helpLines()
-	avail := clamp(maxH-4, 4, len(lines)) // reserve border(2) + title + blank
+	avail := helpAvail(maxH)
 	off := clamp(m.helpOffset, 0, max(0, len(lines)-avail))
 	end := min(off+avail, len(lines))
 

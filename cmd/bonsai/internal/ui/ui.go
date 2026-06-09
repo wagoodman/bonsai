@@ -15,9 +15,9 @@ import (
 	"github.com/anchore/clio"
 	"github.com/anchore/go-logger"
 
-	"github.com/wagoodman/bonsai/bonsai/event"
 	handler "github.com/wagoodman/bonsai/cmd/bonsai/cli/ui"
 	"github.com/wagoodman/bonsai/internal/bus"
+	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/log"
 )
 

@@ -5,7 +5,7 @@ import (
 
 	"github.com/anchore/clio"
 
-	"github.com/wagoodman/bonsai/bonsai/event"
+	"github.com/wagoodman/bonsai/internal/event"
 )
 
 var _ clio.UI = (*NoUI)(nil)

@@ -1,4 +1,7 @@
-package bonsai
+// Package report renders a completed bonsai analysis as human- or machine-readable output
+// (aligned color tables, markdown, or JSON). It depends only on the engine's result types,
+// keeping all terminal/styling concerns out of the analysis core.
+package report
 
 import (
 	"encoding/json"
@@ -10,10 +13,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/muesli/termenv"
+
+	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
 // WriteJSON renders the analysis as indented JSON.
-func WriteJSON(w io.Writer, an *Analysis) error {
+func WriteJSON(w io.Writer, an *bonsai.Analysis) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(an)
@@ -25,7 +30,7 @@ func WriteJSON(w io.Writer, an *Analysis) error {
 // The report is rendered into a buffer and printed later, so lipgloss's own stdout-based
 // color detection doesn't apply; we force the renderer's profile to match the caller's
 // decision (caller already verified the destination is a color-capable TTY).
-func WriteTable(w io.Writer, an *Analysis, top int, color bool) error {
+func WriteTable(w io.Writer, an *bonsai.Analysis, top int, color bool) error {
 	if color {
 		lipgloss.SetColorProfile(termenv.ANSI)
 	}
@@ -33,7 +38,7 @@ func WriteTable(w io.Writer, an *Analysis, top int, color bool) error {
 }
 
 // WriteMarkdown renders the report with markdown headings and fenced/pipe tables (no color).
-func WriteMarkdown(w io.Writer, an *Analysis, top int) error {
+func WriteMarkdown(w io.Writer, an *bonsai.Analysis, top int) error {
 	return (&report{w: w, top: top, md: true}).write(an)
 }
 
@@ -72,7 +77,7 @@ type report struct {
 	pal palette
 }
 
-func (r *report) write(an *Analysis) error {
+func (r *report) write(an *bonsai.Analysis) error {
 	r.summary(an)
 	r.breakdown(an)
 	r.sections(an)
@@ -87,7 +92,7 @@ func (r *report) write(an *Analysis) error {
 // goFloor reports the lowest `go` directive the owned (main + 1st-class) modules could declare,
 // the headroom available to reclaim right now (your declared version vs the dep-imposed floor),
 // and the dependencies pinning that floor — the modules to prune to push it lower.
-func (r *report) goFloor(an *Analysis) {
+func (r *report) goFloor(an *bonsai.Analysis) {
 	f := an.GoFloor
 	if f.Version == "" {
 		r.heading("Go version floor", "no dependency declares a `go` directive — nothing constrains your minimum")
@@ -98,7 +103,7 @@ func (r *report) goFloor(an *Analysis) {
 		"the lowest `go` directive your own modules can declare; deps pin it — prune them to push it lower")
 
 	// headroom you can reclaim now (drop your `go` line to the floor) vs what pruning would buy.
-	if f.OwnedMax != "" && cmpGo(f.OwnedMax, f.Version) > 0 {
+	if f.OwnedMax != "" && bonsai.CompareGoVersions(f.OwnedMax, f.Version) > 0 {
 		r.floorNote(r.pal.good(fmt.Sprintf(
 			"you declare go %s but deps only require go %s — you can drop to %s now",
 			f.OwnedMax, f.Version, f.Version)))
@@ -143,7 +148,7 @@ func (r *report) heading(title, subtitle string) {
 	}
 }
 
-func (r *report) summary(an *Analysis) {
+func (r *report) summary(an *bonsai.Analysis) {
 	if r.md {
 		fmt.Fprintf(r.w, "# binary size analysis\n\n")
 	} else {
@@ -165,7 +170,7 @@ func (r *report) summary(an *Analysis) {
 	fmt.Fprintln(r.w)
 }
 
-func (r *report) breakdown(an *Analysis) {
+func (r *report) breakdown(an *bonsai.Analysis) {
 	denom := an.AccountedSize
 	var thirdParty uint64
 	for _, m := range an.Modules {
@@ -188,8 +193,8 @@ func (r *report) breakdown(an *Analysis) {
 	fmt.Fprintln(r.w)
 }
 
-func (r *report) sections(an *Analysis) {
-	secs := append([]SectionInfo(nil), an.Sections...)
+func (r *report) sections(an *bonsai.Analysis) {
+	secs := append([]bonsai.SectionInfo(nil), an.Sections...)
 	sort.Slice(secs, func(i, j int) bool { return secs[i].Size > secs[j].Size })
 
 	r.heading("Sections (file-backed)", "")
@@ -206,7 +211,7 @@ func (r *report) sections(an *Analysis) {
 // largestModules ranks third-party modules by size. With import-why trees present (--why) it
 // renders each entry with its "← imported by" trace beneath; otherwise it keeps the compact
 // table.
-func (r *report) largestModules(an *Analysis) {
+func (r *report) largestModules(an *bonsai.Analysis) {
 	withWhy := false
 	for _, m := range an.Modules {
 		if m.Why != nil {
@@ -246,7 +251,7 @@ func (r *report) largestModules(an *Analysis) {
 }
 
 // largestModulesTable is the compact ranked table shown when import-why traces are off.
-func (r *report) largestModulesTable(an *Analysis) {
+func (r *report) largestModulesTable(an *bonsai.Analysis) {
 	r.heading("Largest modules by size",
 		"class is relative to code you control: 1st = yours, 2nd = direct dep of yours, 3rd = transitive (--why explains each)")
 	rows := [][]string{}
@@ -270,7 +275,7 @@ func (r *report) largestModulesTable(an *Analysis) {
 
 // moduleRow prints one largest-modules entry as a fixed-width line (so its why tree can hang
 // beneath it), dimming locked modules.
-func (r *report) moduleRow(m ModuleSize, denom uint64) {
+func (r *report) moduleRow(m bonsai.ModuleSize, denom uint64) {
 	if r.md {
 		fmt.Fprintf(r.w, "- **%s** — %s · %s · class %s · %s\n",
 			m.Module, humize(m.Size), pctStr(m.Size, denom), m.Class, kindLabel(m))
@@ -283,8 +288,8 @@ func (r *report) moduleRow(m ModuleSize, denom uint64) {
 	fmt.Fprintf(r.w, "  %s\n", row)
 }
 
-func (r *report) pruneCandidates(an *Analysis) {
-	prunable := make([]ModuleSize, 0, len(an.Modules))
+func (r *report) pruneCandidates(an *bonsai.Analysis) {
+	prunable := make([]bonsai.ModuleSize, 0, len(an.Modules))
 	for _, m := range an.Modules {
 		if m.Prune != nil {
 			prunable = append(prunable, m)
@@ -314,7 +319,7 @@ func (r *report) pruneCandidates(an *Analysis) {
 
 // pruneHeadline renders the one-line "biggest realistic win" sentence for the top prune
 // candidate, naming the shared weight that pruning it would NOT free and who holds it.
-func (r *report) pruneHeadline(m ModuleSize) {
+func (r *report) pruneHeadline(m bonsai.ModuleSize) {
 	p := m.Prune
 	line := fmt.Sprintf("best single win: prune %s → %s now", m.Module, humize(p.FreedBytes))
 	if p.PotentialBytes > p.FreedBytes {
@@ -334,7 +339,7 @@ func (r *report) pruneHeadline(m ModuleSize) {
 	fmt.Fprintf(r.w, "  %s\n\n", r.pal.good(line))
 }
 
-func (r *report) prunePlan(an *Analysis) {
+func (r *report) prunePlan(an *bonsai.Analysis) {
 	if len(an.Plan) == 0 {
 		return
 	}
@@ -351,7 +356,7 @@ func (r *report) prunePlan(an *Analysis) {
 
 // planStep renders one plan step with its own-vs-dragged-in breakdown: it answers whether a
 // prune's payoff is the module's own code or the dependencies it pulls out of the build.
-func (r *report) planStep(n int, s PrunePlanStep) {
+func (r *report) planStep(n int, s bonsai.PrunePlanStep) {
 	dragged := s.Marginal - s.OwnBytes
 
 	if r.md {
@@ -379,7 +384,7 @@ func (r *report) planStep(n int, s PrunePlanStep) {
 // planDeps lists the orphaned dependency modules under a step. It shows every one by default,
 // honoring the same --top limit as the rest of the report (default 40) only as a safety valve
 // against a pathologically wide step; the overflow collapses into a "+N more" line.
-func (r *report) planDeps(freed []FreedModule, prefix string) {
+func (r *report) planDeps(freed []bonsai.FreedModule, prefix string) {
 	line := func(b uint64, label string) {
 		if r.md {
 			fmt.Fprintf(r.w, "%s%s — %s\n", prefix, label, humize(b))
@@ -408,7 +413,7 @@ func (r *report) planDeps(freed []FreedModule, prefix string) {
 
 // renderWhy prints a module's import-why tree as indented "← imported by (class)" branches,
 // tracing back to the 1st-class code that pulled it in. prefix is the indent for this level.
-func (r *report) renderWhy(node *ImportNode, prefix string) {
+func (r *report) renderWhy(node *bonsai.ImportNode, prefix string) {
 	if node == nil {
 		return
 	}
@@ -434,7 +439,7 @@ func (r *report) renderWhy(node *ImportNode, prefix string) {
 // pruning x/tools reads as the go/types toolchain, not a mystery "stdlib"), plus a co-prune
 // note when the item only leaves once other targets are dropped too. No note means this prune
 // alone frees it — answering "do I have to drop anything else to get rid of this?".
-func (r *report) depLabel(f FreedModule) string {
+func (r *report) depLabel(f bonsai.FreedModule) string {
 	label := f.Module
 	if f.Std {
 		label += " (std)"
@@ -458,7 +463,7 @@ func importerNote(importers int) string {
 	}
 }
 
-func (r *report) blame(an *Analysis) {
+func (r *report) blame(an *bonsai.Analysis) {
 	if len(an.Blame) == 0 {
 		return
 	}
@@ -547,16 +552,16 @@ func humize(b uint64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "kMGT"[exp])
 }
 
-func coup(m ModuleSize) *Coupling {
+func coup(m bonsai.ModuleSize) *bonsai.Coupling {
 	if m.Coupling != nil {
 		return m.Coupling
 	}
-	return &Coupling{}
+	return &bonsai.Coupling{}
 }
 
 // kindLabel describes a module's relationship to the build: locked deps (never pruned) win
 // over the direct/indirect distinction since that is what gates a prune suggestion.
-func kindLabel(m ModuleSize) string {
+func kindLabel(m bonsai.ModuleSize) string {
 	switch {
 	case m.Ignored:
 		return "locked"
@@ -568,7 +573,7 @@ func kindLabel(m ModuleSize) string {
 }
 
 // getPct renders the share of a target's subtree that pruning it actually frees (EXCL/POT).
-func getPct(p *PruneResult) string {
+func getPct(p *bonsai.PruneResult) string {
 	if p.PotentialBytes == 0 {
 		return "-"
 	}
@@ -586,6 +591,17 @@ func joinModules(modules []string, n int) string {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// shortModule returns the last path element of a module path, used as a friendly label.
+func shortModule(module string) string {
+	if module == "" {
+		return "main"
+	}
+	if i := strings.LastIndex(module, "/"); i >= 0 {
+		return module[i+1:]
+	}
+	return module
+}
 
 func pct(part, whole uint64) float64 {
 	if whole == 0 {

@@ -5,22 +5,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
 
-	"github.com/wagoodman/bonsai/bonsai"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/prunetui"
+	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
 // Explore is the `bonsai explore` command: an interactive prune explorer. It is a plain cobra
 // command (not wired through clio) so its full-screen TUI owns stdin without the progress
 // event-loop UI contending for it. The build/analysis runs first with simple stderr status.
 func Explore(id clio.Identification) *cobra.Command {
-	// the TUI shows "bonsai · <version>" in its status bar; hide the dev-build placeholder.
+	// the TUI shows "bonsai · <version>" in its status bar; hide the unset build-time default
+	// ("[not provided]" from main.go) that ldflags overrides on real releases.
 	version := id.Version
-	if strings.HasPrefix(version, "[") {
+	if version == "[not provided]" {
 		version = ""
 	}
 	var (

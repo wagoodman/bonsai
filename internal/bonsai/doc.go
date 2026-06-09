@@ -61,35 +61,3 @@ not subtractive DCE — see Harris, "Tree-shaking versus dead code elimination".
 set IS the GC live set; the prunable set is everything reachable only through cuttable edges.
 */
 package bonsai
-
-import (
-	"github.com/anchore/go-logger"
-	"github.com/anchore/go-logger/adapter/redact"
-	"github.com/wagoodman/go-partybus"
-
-	"github.com/wagoodman/bonsai/internal/bus"
-	"github.com/wagoodman/bonsai/internal/log"
-	intRedact "github.com/wagoodman/bonsai/internal/redact"
-)
-
-// SetLogger sets the package-level logger used by the library. Library consumers may call
-// this to route bonsai's log output into their own logger.
-func SetLogger(logger logger.Logger) {
-	useOrAddRedactor()
-	log.Set(logger)
-}
-
-// SetBus sets the event bus the library publishes progress and report events onto.
-func SetBus(b *partybus.Bus) {
-	useOrAddRedactor()
-	bus.Set(b)
-}
-
-// useOrAddRedactor ensures a redaction store exists before the logger/bus are configured,
-// so redaction works even when the library is driven outside the CLI application.
-func useOrAddRedactor() {
-	store := intRedact.Get()
-	if store == nil {
-		intRedact.Set(redact.NewStore())
-	}
-}

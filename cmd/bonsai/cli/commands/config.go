@@ -7,10 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/wagoodman/bonsai/bonsai"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/configedit"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/ignoretui"
 	"github.com/wagoodman/bonsai/internal"
+	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
 // Config is the `bonsai config` command group. Its subcommands edit the bonsai config file.

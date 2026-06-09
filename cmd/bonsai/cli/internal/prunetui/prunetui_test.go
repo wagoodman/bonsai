@@ -12,8 +12,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wagoodman/bonsai/bonsai"
+	"github.com/wagoodman/bonsai/internal/bonsai"
 )
+
+// forceColor turns on ANSI styling so style assertions see real escape codes even without a TTY,
+// and restores the prior profile afterward so the global doesn't leak into later tests.
+func forceColor(t *testing.T) {
+	t.Helper()
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+}
 
 func TestHumize(t *testing.T) {
 	tests := []struct {
@@ -51,7 +60,7 @@ func TestPruneAloneLine(t *testing.T) {
 }
 
 func TestWhyTreeInversion(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI) // force styling so the target's purple marker is visible
+	forceColor(t) // force styling so the target's purple marker is visible
 
 	// reverse importer tree from the Session: target X, imported by a, imported by you (1st).
 	root := &bonsai.ImportNode{Module: "X", Class: "3rd", Via: []*bonsai.ImportNode{
@@ -82,7 +91,7 @@ func TestWhyTreeInversion(t *testing.T) {
 }
 
 func TestStyleByClass(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI) // force styling even without a TTY in tests
+	forceColor(t) // force styling even without a TTY in tests
 
 	// 1st-class renders gold even when locked; locked-but-not-yours renders grey; plain otherwise.
 	gold := classStyle("1st", true, true, "m")
@@ -114,7 +123,7 @@ func TestSortByGoMin(t *testing.T) {
 }
 
 func TestGoVerCell(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
+	forceColor(t)
 
 	plain, styled := goVerCell(bonsai.Module{GoVersion: "1.24.0"}, true)
 	assert.Contains(t, plain, glyphFloor+"1.24.0", "pinner is △-flagged")
@@ -226,7 +235,7 @@ func TestGoDirectiveLine(t *testing.T) {
 }
 
 func TestHelpOverlay(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
+	forceColor(t)
 
 	// a terminal tall enough to show the whole legend at once.
 	m := model{termW: 90, termH: 48}
@@ -267,7 +276,7 @@ func TestHelpOverlay(t *testing.T) {
 }
 
 func TestHelpOverlayScrolls(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
+	forceColor(t)
 
 	// a short terminal can't show the whole legend, so the last sections are below the fold...
 	m := model{termW: 90, termH: 20, showHelp: true}

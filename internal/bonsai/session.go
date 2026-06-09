@@ -96,6 +96,11 @@ func (s *Session) MainModule() string { return s.g.mainModule }
 // baseline a what-if projects down from.
 func (s *Session) AccountedSize() uint64 { return s.bin.SectionsSize }
 
+// BinarySize is the analyzed file's size on disk: the original binary as built, including any
+// debug info and symbols that stripping (`-s -w`) would remove. Equals AccountedSize when the
+// input is already stripped.
+func (s *Session) BinarySize() uint64 { return s.bin.FileSize }
+
 // Module is one row for the explorer list: its size, classification state, prune value
 // (Exclusive), and removal-effort signals (Coupling, Importers).
 type Module struct {
