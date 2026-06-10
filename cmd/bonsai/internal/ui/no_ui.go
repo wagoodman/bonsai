@@ -1,11 +1,10 @@
 package ui
 
 import (
-	"github.com/wagoodman/go-partybus"
-
 	"github.com/anchore/clio"
 
 	"github.com/wagoodman/bonsai/internal/event"
+	"github.com/wagoodman/go-partybus"
 )
 
 var _ clio.UI = (*NoUI)(nil)

@@ -1,0 +1,21 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "38 11 * * 3"
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze
+    uses: anchore/workflows/.github/workflows/codeql.yaml@d10c79ed76d583eb03f188cdc30ed6f8a45184f7 # v0.7.2
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read

@@ -3,15 +3,14 @@ package ui
 import (
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wagoodman/go-partybus"
-	"github.com/wagoodman/go-progress"
-
 	"github.com/anchore/bubbly"
 	"github.com/anchore/bubbly/bubbles/taskprogress"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/log"
+	"github.com/wagoodman/go-partybus"
+	"github.com/wagoodman/go-progress"
 )
 
 var _ bubbly.EventHandler = (*Handler)(nil)

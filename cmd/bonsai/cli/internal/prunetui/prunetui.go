@@ -19,6 +19,16 @@ import (
 	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
+// key bindings and the "main" class label, recurring across the update/view switch arms.
+const (
+	keyEsc    = "esc"
+	keyEnter  = "enter"
+	keyDown   = "down"
+	keyPgUp   = "pgup"
+	keyPgDown = "pgdown"
+	classMain = "main"
+)
+
 var (
 	styBar    = lipgloss.NewStyle().Bold(true)
 	styHelp   = lipgloss.NewStyle().Faint(true)
@@ -253,14 +263,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc":
+	case keyEsc:
 		m.filter.SetValue("")
 		m.filtering = false
 		m.rebuildVisible()
 		m.clampCursor()
 		m.recompute()
 		return m, nil
-	case "enter":
+	case keyEnter:
 		m.filtering = false
 		m.filter.Blur()
 		return m, nil
@@ -288,9 +298,9 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 		m.helpOffset = 0
 		return m, nil
-	case "esc", "q":
+	case keyEsc, "q":
 		return m, tea.Quit
-	case "enter":
+	case keyEnter:
 		m.confirmed = true
 		return m, tea.Quit
 	case "tab":
@@ -319,11 +329,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k", "ctrl+p":
 		m.moveList(-1)
-	case "down", "j", "ctrl+n":
+	case keyDown, "j", "ctrl+n":
 		m.moveList(1)
-	case "pgup":
+	case keyPgUp:
 		m.moveList(-m.listH())
-	case "pgdown":
+	case keyPgDown:
 		m.moveList(m.listH())
 	case "home", "g":
 		m.moveList(-len(m.visible))
@@ -351,16 +361,16 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.detailCursor > 0 {
 			m.detailCursor--
 		}
-	case "down", "j":
+	case keyDown, "j":
 		if m.detailCursor < len(m.dragStatus)-1 {
 			m.detailCursor++
 		}
-	case " ", "x", "right", "l", "enter":
+	case " ", "x", "right", "l", keyEnter:
 		if m.detailCursor < len(m.dragStatus) {
 			mod := m.dragStatus[m.detailCursor].Module
 			m.expanded[mod] = !m.expanded[mod]
 		}
-		if msg.String() == "enter" { // enter shouldn't quit while exploring the detail pane
+		if msg.String() == keyEnter { // enter shouldn't quit while exploring the detail pane
 			return m, nil
 		}
 	}
@@ -372,11 +382,11 @@ func (m model) updateWhy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		m.whyOffset = max(0, m.whyOffset-1)
-	case "down", "j":
+	case keyDown, "j":
 		m.whyOffset++
-	case "pgup":
+	case keyPgUp:
 		m.whyOffset = max(0, m.whyOffset-5)
-	case "pgdown":
+	case keyPgDown:
 		m.whyOffset += 5
 	}
 	return m, nil
@@ -386,15 +396,15 @@ func (m model) updateWhy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // leaks through to the explorer underneath, so esc/q close the help instead of quitting.
 func (m model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q", "?", "enter":
+	case keyEsc, "q", "?", keyEnter:
 		m.showHelp = false
 	case "up", "k":
 		m.helpOffset = max(0, m.helpOffset-1)
-	case "down", "j":
+	case keyDown, "j":
 		m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
-	case "pgup":
+	case keyPgUp:
 		m.helpOffset = max(0, m.helpOffset-5)
-	case "pgdown":
+	case keyPgDown:
 		m.helpOffset = min(m.helpOffset+5, m.helpMaxOffset())
 	}
 	return m, nil
@@ -428,7 +438,7 @@ func (m *model) fixOffset() {
 }
 
 func (m *model) scrollDetailToCursor() {
-	_, _, _, detailH, _ := m.layout()
+	_, _, _, detailH, _ := m.layout() //nolint:dogsled // layout() returns five sizing values; only one is needed here
 	avail := max(1, detailH-1)
 	line := detailInfoLines
 	for k := 0; k < m.detailCursor && k < len(m.dragStatus); k++ {
@@ -502,6 +512,10 @@ func (m model) cursorModule() string {
 	return ""
 }
 
+// candidateCount reports how many modules are prune targets. Exercised by the unit tests;
+// the linter's unused check ignores test files (run.tests=false), so it is annotated here.
+//
+//nolint:unused
 func (m model) candidateCount() int {
 	n := 0
 	for _, mod := range m.all {
@@ -539,6 +553,7 @@ func (m model) layout() (leftW, rightW, bodyH, detailH, whyH int) {
 }
 
 func (m model) listH() int {
+	//nolint:dogsled // layout() returns five sizing values; only one is needed here
 	_, _, bodyH, _, _ := m.layout()
 	return max(1, bodyH-2) // title bar + column header
 }
@@ -741,7 +756,7 @@ func (m model) goDirectiveLine(d bonsai.Detail) string {
 	}
 	prefix := styDim.Render(fmt.Sprintf("go directive  %s  ", d.GoVersion))
 	switch {
-	case d.Controlled || d.Class == "main":
+	case d.Controlled || d.Class == classMain:
 		return prefix + styDim.Render("(yours — set freely)")
 	case m.floorPins[d.Module]:
 		note := fmt.Sprintf("%s pins go floor %s", glyphFloor, m.goFloor.Version)
@@ -827,7 +842,7 @@ func renderWhyTrie(t *whyTrie, prefix string, width int, target string) []string
 		if last {
 			branch, cont = "└─ ", "   "
 		}
-		gold := kid.class == "1st" || kid.class == "main"
+		gold := kid.class == "1st" || kid.class == classMain
 		label := truncate(kid.mod, width-len(prefix)-8)
 		name := classStyle(kid.class, gold, false, label)
 		// the selected module is shown purple here too, tying it back to the left-pane selection.
@@ -948,7 +963,7 @@ func helpLines() []string {
 		"",
 		head("Keys"),
 		dim("↑/↓") + " move   " + dim("space") + " prune   " + dim("/") + " filter   " + dim("a") + " all/candidates",
-		dim("s") + " sort   " + dim("Tab") + " panes   " + dim("enter") + " apply   " + dim("q") + " quit   " + dim("?") + " help",
+		dim("s") + " sort   " + dim("Tab") + " panes   " + dim(keyEnter) + " apply   " + dim("q") + " quit   " + dim("?") + " help",
 	}
 }
 
@@ -957,7 +972,7 @@ func helpLines() []string {
 // classTag is a colored one-letter class indicator: M(ain), 1st, 2nd candidate, L(ocked), 3rd.
 func classTag(mod bonsai.Module) string {
 	switch {
-	case mod.Class == "main":
+	case mod.Class == classMain:
 		return styGold.Render("M")
 	case mod.Controlled:
 		return styGold.Render("1")
@@ -972,7 +987,7 @@ func classTag(mod bonsai.Module) string {
 
 func classTagPlain(mod bonsai.Module) string {
 	switch {
-	case mod.Class == "main":
+	case mod.Class == classMain:
 		return "M"
 	case mod.Controlled:
 		return "1"
@@ -1017,7 +1032,7 @@ func plainDep(st bonsai.DepStatus, label string) string {
 
 func classStyle(class string, controlled, locked bool, name string) string {
 	switch {
-	case controlled || class == "1st" || class == "main":
+	case controlled || class == "1st" || class == classMain:
 		return styGold.Render(name)
 	case locked:
 		return styDim.Render(name)

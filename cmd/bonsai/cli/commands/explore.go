@@ -147,6 +147,6 @@ func saveExploreState(key string, state prunetui.State) {
 		return
 	}
 	if data, err := json.MarshalIndent(store, "", "  "); err == nil {
-		_ = os.WriteFile(path, data, 0o644)
+		_ = os.WriteFile(path, data, 0o644) //nolint:gosec // explorer UI state cache; intentionally world-readable, holds no secrets
 	}
 }

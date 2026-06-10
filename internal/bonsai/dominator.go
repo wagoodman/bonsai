@@ -44,7 +44,7 @@ type domModel struct {
 // package set), computes its dominator tree, and rolls up retained sizes. selfSize maps
 // import paths to attributed bytes; c says which modules are controlled and which are
 // prune targets.
-func (g *buildGraph) buildDomModel(selfSize map[string]uint64, base map[string]bool, c *classification) *domModel {
+func (g *buildGraph) buildDomModel(selfSize map[string]uint64, base map[string]bool, c *classification) *domModel { //nolint:funlen // builds the dominator-tree retained-size model in one cohesive pass
 	const superRoot = 0
 
 	m := &domModel{
@@ -210,7 +210,7 @@ func (m *domModel) exclusiveBytes(target string) uint64 {
 // Cooper–Harvey–Kennedy iterative algorithm ("A Simple, Fast Dominance Algorithm", 2001).
 // For graphs of a few thousand nodes it outperforms Lengauer–Tarjan and is far simpler.
 // idom[entry] == entry; unreachable nodes get -1.
-func dominators(n, entry int, succ [][]int) []int {
+func dominators(n, entry int, succ [][]int) []int { //nolint:funlen,gocognit // Cooper-Harvey-Kennedy iterative dominator algorithm kept intact as a unit
 	// postorder traversal and numbering (entry finishes last → highest number).
 	postorder := make([]int, 0, n)
 	postNum := make([]int, n)

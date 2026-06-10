@@ -38,7 +38,7 @@ func buildForAnalysis(dir, target string) (buildArtifacts, func(), error) {
 	// -dumpdep writes the symbol dependency graph to stderr during the link step; capture
 	// it to a file. On a build failure the link step never runs, so stderr holds only the
 	// compiler error, which we surface for diagnostics.
-	cmd := exec.Command("go", "build", "-o", binF.Name(), "-ldflags=-dumpdep", target)
+	cmd := exec.Command("go", "build", "-o", binF.Name(), "-ldflags=-dumpdep", target) //nolint:gosec // invoking the go toolchain on a user-supplied target is this tool's whole purpose
 	cmd.Dir = dir
 	cmd.Stderr = ddF
 	runErr := cmd.Run()
@@ -52,15 +52,15 @@ func buildForAnalysis(dir, target string) (buildArtifacts, func(), error) {
 	return buildArtifacts{Binary: binF.Name(), Dumpdep: ddF.Name()}, cleanup, nil
 }
 
-// tailFile returns up to the last max bytes of the file at path (build diagnostics live at
+// tailFile returns up to the last limit bytes of the file at path (build diagnostics live at
 // the end). Best-effort: returns "" if the file can't be read.
-func tailFile(path string, max int) string {
+func tailFile(path string, limit int) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	if len(data) > max {
-		data = data[len(data)-max:]
+	if len(data) > limit {
+		data = data[len(data)-limit:]
 	}
 	return strings.TrimSpace(string(data))
 }

@@ -140,7 +140,7 @@ func gitState(dir string) (commit string, clean bool) {
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // git subcommands are internally constructed; dir is user-supplied by design
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {

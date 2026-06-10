@@ -93,7 +93,7 @@ func WriteIgnore(path string, patterns []string) error {
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
-	return os.WriteFile(path, out, 0o644)
+	return os.WriteFile(path, out, 0o644) //nolint:gosec // user-editable config file; 0644 is the intended permission
 }
 
 // documentRoot returns the mapping node that is the body of a parsed YAML document, or nil

@@ -23,7 +23,7 @@ type Coupling struct {
 // references it. Symbol counting is a syntactic approximation: it matches
 // `alias.Symbol` selector expressions against the file's imports without full type
 // resolution, which is cheap (stdlib only) and good enough to rank coupling depth.
-func scanCoupling(g *buildGraph) (map[string]*Coupling, error) {
+func scanCoupling(g *buildGraph) (map[string]*Coupling, error) { //nolint:funlen,gocognit // single graph sweep with interdependent accumulators; splitting obscures the flow
 	out := map[string]*Coupling{}
 	get := func(mod string) *Coupling {
 		c := out[mod]

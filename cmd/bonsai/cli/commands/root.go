@@ -5,9 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/anchore/clio"
+	"github.com/spf13/cobra"
 
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/options"
 	"github.com/wagoodman/bonsai/internal/bonsai"

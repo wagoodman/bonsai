@@ -284,12 +284,12 @@ func (s *Session) Detail(module string) Detail {
 			continue
 		}
 		if mod == "" {
-			mod = "std"
+			mod = modStd
 		}
 		dragBytes[mod] += s.selfSize[ip]
 	}
 	for mod, b := range dragBytes {
-		d.DragOut = append(d.DragOut, FreedModule{Module: mod, Bytes: b, Std: mod == "std"})
+		d.DragOut = append(d.DragOut, FreedModule{Module: mod, Bytes: b, Std: mod == modStd})
 	}
 	sort.Slice(d.DragOut, func(i, j int) bool {
 		if d.DragOut[i].Bytes != d.DragOut[j].Bytes {

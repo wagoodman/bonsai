@@ -231,7 +231,7 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 	return bin, g, nil
 }
 
-func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis {
+func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis { //nolint:funlen // sequential analysis pipeline; clearer as one pass than fragmented across helpers
 	an := &Analysis{
 		BinarySize:    bin.FileSize,
 		AccountedSize: bin.SectionsSize,

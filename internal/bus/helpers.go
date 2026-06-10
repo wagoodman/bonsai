@@ -1,11 +1,10 @@
 package bus
 
 import (
-	"github.com/wagoodman/go-partybus"
-	"github.com/wagoodman/go-progress"
-
 	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/redact"
+	"github.com/wagoodman/go-partybus"
+	"github.com/wagoodman/go-progress"
 )
 
 // PublishTask publishes a long-running task onto the bus and returns a progress handle the

@@ -281,7 +281,7 @@ func (e *elfFormat) sections() []binSection {
 			addr:       s.Addr,
 			size:       s.Size,
 			fileBacked: s.Type != elf.SHT_NOBITS,
-			isText:     s.Name == ".text",
+			isText:     s.Name == sectionText,
 			isPclntb:   s.Name == ".gopclntab",
 		}
 	}
@@ -306,7 +306,7 @@ func (e *elfFormat) symbols() []binSymbol {
 	}
 	return out
 }
-func (e *elfFormat) textStart() uint64 { return e.f.Section(".text").Addr }
+func (e *elfFormat) textStart() uint64 { return e.f.Section(sectionText).Addr }
 func (e *elfFormat) pclntab() ([]byte, error) {
 	s := e.f.Section(".gopclntab")
 	if s == nil {
@@ -338,7 +338,7 @@ func newPEFormat(f *pe.File) (*peFormat, error) {
 	default:
 		return nil, fmt.Errorf("unsupported PE optional header")
 	}
-	text := f.Section(".text")
+	text := f.Section(sectionText)
 	if text == nil {
 		return nil, fmt.Errorf("no .text section")
 	}
@@ -359,7 +359,7 @@ func (p *peFormat) sections() []binSection {
 			addr:       uint64(s.VirtualAddress),
 			size:       uint64(s.VirtualSize),
 			fileBacked: s.Size > 0, // SizeOfRawData
-			isText:     s.Name == ".text",
+			isText:     s.Name == sectionText,
 			isPclntb:   false,
 		}
 	}
@@ -388,7 +388,7 @@ func findPEPclntab(f *pe.File) ([]byte, error) {
 		{0xf0, 0xff, 0xff, 0xff}, // go1.18 - 1.19
 		{0xf1, 0xff, 0xff, 0xff}, // go1.20+
 	}
-	for _, name := range []string{".rdata", ".data", ".text"} {
+	for _, name := range []string{".rdata", ".data", sectionText} {
 		s := f.Section(name)
 		if s == nil {
 			continue
@@ -429,16 +429,16 @@ func hasPrefixAt(b []byte, off int, prefix []byte) bool {
 // "<generated>". Works for both function and data symbols.
 func packageOfSymbol(name string) string {
 	if name == "" {
-		return "<generated>"
+		return pkgGenerated
 	}
 	slash := strings.LastIndexByte(name, '/')
 	dot := strings.IndexByte(name[slash+1:], '.')
 	if dot < 0 {
-		return "<generated>"
+		return pkgGenerated
 	}
 	pkg := name[:slash+1+dot]
 	if strings.ContainsAny(pkg, ":") || strings.HasPrefix(pkg, "_") {
-		return "<generated>"
+		return pkgGenerated
 	}
 	return pkg
 }

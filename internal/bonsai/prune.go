@@ -82,9 +82,10 @@ func (g *buildGraph) blockerSets(c *classification) map[string][]string {
 // bytes (from the dominator tree — what pruning this target alone frees), the full subtree
 // potential, and the shared remainder enumerated by holder. blockers (from blockerSets)
 // names the other targets that keep each shared package alive.
+//
+//nolint:funlen,gocognit // per-target savings breakdown built in one pass over the dominator tree
 func (g *buildGraph) pruneResults(selfSize map[string]uint64, base map[string]bool, c *classification,
 	dom *domModel, blockers map[string][]string) map[string]*PruneResult {
-
 	// total reachable package count per module, to decide which modules are fully freed.
 	totalByModule := map[string]int{}
 	for ip := range base {
@@ -138,7 +139,7 @@ func (g *buildGraph) pruneResults(selfSize map[string]uint64, base map[string]bo
 			// shared: stays because another target reaches it too.
 			mod := g.moduleOfPkg[ip]
 			if mod == "" {
-				mod = "std" // standard-library weight has no module; bucket it together
+				mod = modStd // standard-library weight has no module; bucket it together
 			}
 			sharedBytes[mod] += selfSize[ip]
 			if sharedVia[mod] == nil {

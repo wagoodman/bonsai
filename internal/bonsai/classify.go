@@ -28,7 +28,7 @@ const (
 func (c moduleClass) String() string {
 	switch c {
 	case classMain:
-		return "main"
+		return pkgMain
 	case classFirst:
 		return "1st"
 	case classSecond:

@@ -5,9 +5,8 @@ event defined here there should be a corresponding event parser defined in this 
 package event
 
 import (
-	"github.com/wagoodman/go-partybus"
-
 	"github.com/wagoodman/bonsai/internal"
+	"github.com/wagoodman/go-partybus"
 )
 
 const (

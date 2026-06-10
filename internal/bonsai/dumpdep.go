@@ -101,10 +101,10 @@ func symbolPackage(sym, mainImport string) string {
 		return ""
 	}
 	pkg := packageOfSymbol(sym)
-	if pkg == "<generated>" {
+	if pkg == pkgGenerated {
 		return ""
 	}
-	if pkg == "main" {
+	if pkg == pkgMain {
 		return mainImport
 	}
 	return pkg

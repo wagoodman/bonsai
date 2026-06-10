@@ -17,6 +17,9 @@ import (
 	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
+// colModule is the recurring "module" column header shared across the report's tables.
+const colModule = "MODULE"
+
 // WriteJSON renders the analysis as indented JSON.
 func WriteJSON(w io.Writer, an *bonsai.Analysis) error {
 	enc := json.NewEncoder(w)
@@ -227,7 +230,7 @@ func (r *report) largestModules(an *bonsai.Analysis) {
 	r.heading("Largest modules by size",
 		"class is relative to code you control; ← traces who imports it back to your 1st-class code")
 	if !r.md {
-		fmt.Fprintf(r.w, "  %s\n", r.pal.head(fmt.Sprintf("%9s  %5s  %-5s  %-8s  %s", "SIZE", "%BIN", "CLASS", "KIND", "MODULE")))
+		fmt.Fprintf(r.w, "  %s\n", r.pal.head(fmt.Sprintf("%9s  %5s  %-5s  %-8s  %s", "SIZE", "%BIN", "CLASS", "KIND", colModule)))
 	}
 	shown := 0
 	for _, m := range an.Modules {
@@ -270,7 +273,7 @@ func (r *report) largestModulesTable(an *bonsai.Analysis) {
 			break
 		}
 	}
-	r.table([]string{"SIZE", "%BIN", "CLASS", "KIND", "MODULE"}, rows, dim)
+	r.table([]string{"SIZE", "%BIN", "CLASS", "KIND", colModule}, rows, dim)
 }
 
 // moduleRow prints one largest-modules entry as a fixed-width line (so its why tree can hang
@@ -314,7 +317,7 @@ func (r *report) pruneCandidates(an *bonsai.Analysis) {
 			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Class, m.Module,
 		})
 	}
-	r.table([]string{"EXCL", "POT", "GET%", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "CLASS", "MODULE"}, rows, nil)
+	r.table([]string{"EXCL", "POT", "GET%", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "CLASS", colModule}, rows, nil)
 }
 
 // pruneHeadline renders the one-line "biggest realistic win" sentence for the top prune
@@ -480,7 +483,7 @@ func (r *report) blame(an *bonsai.Analysis) {
 		}
 		rows = append(rows, []string{humize(b.Blame), b.Module})
 	}
-	r.table([]string{"BLAME", "MODULE"}, rows, nil)
+	r.table([]string{"BLAME", colModule}, rows, nil)
 }
 
 // table renders a titled table. In markdown mode it emits a pipe table; otherwise a
@@ -503,7 +506,7 @@ func (r *report) table(headers []string, rows [][]string, dim []bool) {
 		BorderHeader(false).BorderColumn(false).BorderRow(false).
 		Headers(headers...).
 		Rows(rows...).
-		StyleFunc(func(row, col int) lipgloss.Style {
+		StyleFunc(func(row, _ int) lipgloss.Style {
 			base := lipgloss.NewStyle().PaddingRight(2)
 			switch {
 			case !r.pal.on:

@@ -100,7 +100,7 @@ func (ri *reachIndex) sampledShapley(n int) []uint64 {
 	samples = max(samples, minSamples)
 	samples = min(samples, maxSamples)
 
-	rng := rand.New(rand.NewSource(shapleySeed))
+	rng := rand.New(rand.NewSource(shapleySeed)) //nolint:gosec // deterministic Monte-Carlo sampling; reproducibility matters, cryptographic strength does not
 	perm := ri.allTargetIDs()
 	cut := make([]bool, n)
 	phi := make([]float64, n)

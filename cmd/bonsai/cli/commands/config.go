@@ -51,10 +51,7 @@ func configIgnore() *cobra.Command {
 }
 
 func runConfigIgnore(cmd *cobra.Command, dir, target string) error {
-	path, err := resolveConfigPath(cmd)
-	if err != nil {
-		return err
-	}
+	path := resolveConfigPath(cmd)
 
 	current, err := configedit.ReadIgnore(path)
 	if err != nil {
@@ -93,7 +90,9 @@ func runConfigIgnore(cmd *cobra.Command, dir, target string) error {
 		return nil
 	}
 
-	final := append(extras, chosen...)
+	final := make([]string, 0, len(extras)+len(chosen))
+	final = append(final, extras...)
+	final = append(final, chosen...)
 	sort.Strings(final)
 	if err := configedit.WriteIgnore(path, final); err != nil {
 		return err
@@ -119,9 +118,9 @@ func splitIgnore(current []string, candidates map[string]bool) (preselected map[
 
 // resolveConfigPath determines which file to edit: the first --config/-c value if given,
 // else the first existing default config file, else ".<app>.yaml" in the current directory.
-func resolveConfigPath(cmd *cobra.Command) (string, error) {
+func resolveConfigPath(cmd *cobra.Command) string {
 	if files, err := cmd.Flags().GetStringArray("config"); err == nil && len(files) > 0 {
-		return files[0], nil
+		return files[0]
 	}
 	defaults := []string{
 		"." + internal.ApplicationName + ".yaml",
@@ -132,10 +131,10 @@ func resolveConfigPath(cmd *cobra.Command) (string, error) {
 	}
 	for _, p := range defaults {
 		if _, err := os.Stat(p); err == nil {
-			return p, nil
+			return p
 		}
 	}
-	return defaults[0], nil
+	return defaults[0]
 }
 
 func plural(n int) string {

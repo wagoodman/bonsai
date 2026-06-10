@@ -115,7 +115,7 @@ func loadBuildGraph(dir, target, goos, goarch string) (*buildGraph, error) {
 	// packages are reachable only if imported. Narrow roots to package name "main".
 	var realRoots []string
 	for _, ip := range g.rootPackages {
-		if g.packages[ip].Name == "main" {
+		if g.packages[ip].Name == pkgMain {
 			realRoots = append(realRoots, ip)
 		}
 	}

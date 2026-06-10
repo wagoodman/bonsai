@@ -7,18 +7,17 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/wagoodman/go-partybus"
-
 	"github.com/anchore/bubbly/bubbles/frame"
 	"github.com/anchore/clio"
 	"github.com/anchore/go-logger"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	handler "github.com/wagoodman/bonsai/cmd/bonsai/cli/ui"
 	"github.com/wagoodman/bonsai/internal/bus"
 	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/log"
+	"github.com/wagoodman/go-partybus"
 )
 
 var _ interface {
