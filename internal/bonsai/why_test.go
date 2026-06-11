@@ -17,7 +17,7 @@ func TestImportWhy(t *testing.T) {
 	base := g.reachable(nil)
 	importers := g.moduleImporters(base)
 
-	why := importWhy("docker", importers, c, whyBudget)
+	why := importWhy("docker", importers, c)
 	require.NotNil(t, why)
 	assert.Equal(t, "docker", why.Module)
 
@@ -44,5 +44,5 @@ func TestImportWhyEntrypointIsNil(t *testing.T) {
 	base := g.reachable(nil)
 	importers := g.moduleImporters(base)
 
-	assert.Nil(t, importWhy("app", importers, c, whyBudget), "the main module is imported by nothing")
+	assert.Nil(t, importWhy("app", importers, c), "the main module is imported by nothing")
 }

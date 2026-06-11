@@ -281,7 +281,8 @@ func TestHelpOverlayScrolls(t *testing.T) {
 	// a short terminal can't show the whole legend, so the last sections are below the fold...
 	m := model{termW: 90, termH: 20, showHelp: true}
 	top := stripStyle(m.View())
-	assert.Contains(t, top, "/", "a partial view shows the [from–to/total] scroll marker")
+	// match the marker itself, not just "/" — the dismiss hint ("↑/↓ scroll") also has a slash.
+	assert.Regexp(t, `\[\d+–\d+/\d+\]`, top, "a partial view shows the [from–to/total] scroll marker")
 	assert.NotContains(t, top, "unlock", "the Reclassify/Keys sections start below the fold")
 
 	// ...until you page down to them.

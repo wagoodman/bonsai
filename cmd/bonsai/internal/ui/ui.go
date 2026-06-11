@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -19,6 +20,49 @@ import (
 	"github.com/wagoodman/bonsai/internal/log"
 	"github.com/wagoodman/go-partybus"
 )
+
+// RunWithProgress renders the same task-progress UI the root command shows (the ✔ status
+// lines analysis publishes onto the bonsai bus) while work runs, then tears the UI down before
+// returning. Interactive subcommands use this so their build/analysis phase gets an identical
+// status experience to the static report, without leaving the progress event-loop holding
+// stdin while their own full-screen TUI takes over. It mirrors what clio's event loop does for
+// the root command, scoped to a single synchronous phase.
+func RunWithProgress(quiet bool, work func() error) error {
+	// without an interactive stdin the bubbletea progress UI has nothing to render to (and the
+	// caller's full-screen TUI can't run either); just do the work, matching how the root
+	// command falls back to a no-op UI off a tty.
+	if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return work()
+	}
+
+	b := partybus.NewBus()
+	bus.Set(b)
+
+	u := New(false, quiet)
+	sub := b.Subscribe()
+	if err := u.Setup(sub); err != nil {
+		return err
+	}
+
+	// run work in the background; signal exit when it finishes so the loop drains and the UI
+	// can tear down (matching how the root command's worker publishes exit on completion).
+	var workErr error
+	go func() {
+		workErr = work()
+		b.Publish(partybus.Event{Type: event.CLIExitType})
+	}()
+
+	// pump bus events into the UI until handling the exit event unsubscribes and closes the
+	// channel.
+	for e := range sub.Events() {
+		if err := u.Handle(e); err != nil && !errors.Is(err, partybus.ErrUnsubscribe) {
+			log.Warnf("unable to handle UI event: %+v", err)
+		}
+	}
+
+	_ = u.Teardown(false)
+	return workErr
+}
 
 var _ interface {
 	tea.Model

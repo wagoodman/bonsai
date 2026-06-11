@@ -45,17 +45,24 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6.0.2
         with:
           fetch-depth: 0 # we need the full history to reason about changelogs and tags
+          # persist credentials so we can push the version tag below using the default GITHUB_TOKEN
           persist-credentials: true
 
       - name: Bootstrap environment
-        uses: anchore/go-make/.github/actions/setup@c3c5675b4212f2263c44ce01c6a9fab8d95db617 # v0.6.0
+        uses: ./.github/actions/bootstrap
+
+      - name: Tag release
+        # tagging is done here (not via a separate deploy key / TAG_TOKEN secret); the default GITHUB_TOKEN
+        # persisted by checkout has the contents:write permission needed to push the tag.
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          git tag "$VERSION"
+          git push origin "$VERSION"
 
       - name: Build & publish release artifacts
         run: make ci-release
         env:
-          # for pushing tags (requires write access to content, but not packages)
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-          RELEASE_VERSION: ${{ github.event.inputs.version }}
           # for creating the release (requires write access to packages and content)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -19,7 +19,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    mod_timestamp: &build-timestamp '{{ .CommitTimestamp }}'
+    mod_timestamp: &build-timestamp "{{ .CommitTimestamp }}"
     ldflags: &build-ldflags |
       -w
       -s
@@ -56,7 +56,7 @@ nfpms:
   - license: "Apache 2.0"
     maintainer: "Alex Goodman"
     homepage: &website "https://github.com/wagoodman/bonsai"
-    description: &description "Discover what's actually in your Go binary and which dependencies are worth pruning."
+    description: &description "Helping you make smaller dependency trees for you Go projects."
     formats:
       - rpm
       - deb

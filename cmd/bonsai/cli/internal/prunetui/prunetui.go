@@ -891,9 +891,11 @@ func (m model) viewHelpOverlay() string {
 
 // helpAvail is the number of legend rows that fit in a card of height maxH, reserving the
 // border(2) + title + blank. helpCard and helpMaxOffset both derive geometry from it so scrolling
-// and rendering agree on where the bottom is.
+// and rendering agree on where the bottom is. The floor is 1 (not a fixed minimum that could make
+// the card taller than maxH) so the overlay degrades to a single scrollable row on a tiny terminal
+// instead of overflowing the placement region.
 func helpAvail(maxH int) int {
-	return clamp(maxH-4, 4, len(helpLines()))
+	return clamp(maxH-4, 1, len(helpLines()))
 }
 
 // helpMaxOffset is the furthest the legend can scroll before the last row sits at the bottom, so

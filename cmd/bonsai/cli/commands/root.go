@@ -33,32 +33,38 @@ const (
 	formatMarkdown = "markdown"
 )
 
-type analyzeConfig struct {
-	options.Format   `yaml:",inline" json:",inline" mapstructure:",squash"`
-	options.Analysis `yaml:"analysis" json:"analysis" mapstructure:"analysis"`
+// defaultFormat returns a Format preconfigured with the three shared output formats.
+func defaultFormat() options.Format {
+	return options.Format{
+		Output:           formatTable,
+		AllowableFormats: []string{formatTable, formatJSON, formatMarkdown},
+	}
 }
 
-// Root is the bonsai entrypoint command. It builds the target in a Go module (or analyzes
-// a prebuilt binary via --binary) and reports what each module contributes to its size and
-// which direct dependencies, if pruned, would free the most bytes.
+type anatomyConfig struct {
+	options.Format  `yaml:",inline" json:",inline" mapstructure:",squash"`
+	options.Anatomy `yaml:"analysis" json:"analysis" mapstructure:"analysis"`
+}
+
+// Root is the bonsai entrypoint command: the binary's anatomy — how big it is and what occupies
+// the space, attributed by content (code / data / pclntab) and by owner (module). The prune and
+// go-version subjects live under their own subcommands.
 func Root(app clio.Application) *cobra.Command {
-	opts := &analyzeConfig{
-		Format: options.Format{
-			Output:           formatTable,
-			AllowableFormats: []string{formatTable, formatJSON, formatMarkdown},
-		},
-		Analysis: options.DefaultAnalysis(),
+	opts := &anatomyConfig{
+		Format:  defaultFormat(),
+		Anatomy: options.DefaultAnatomy(),
 	}
 
 	return app.SetupRootCommand(&cobra.Command{
 		Use:   "bonsai [DIR]",
-		Short: "understand what is in a Go binary and which dependencies, if pruned, would yield the best size savings",
+		Short: "helps you make smaller dependency trees for you Go projects",
 		Long: "bonsai builds a Go module's entrypoint and attributes the resulting binary's size to its module " +
-			"dependencies, estimating the cost/benefit of pruning each direct dependency by joining size, " +
-			"tree-shake, and coupling signals. Pass --binary to analyze a prebuilt binary instead.",
+			"dependencies, broken down by content and by owner. Use `bonsai prune` to see which dependencies, if " +
+			"removed, would free the most bytes, and `bonsai go-version` for the lowest go directive you can declare. " +
+			"Pass --binary to analyze a prebuilt binary instead.",
 		Example: options.FormatPositionalArgsHelp(
 			map[string]string{
-				pathArg: "the module directory to build and analyze (default: current directory)",
+				pathArg: pathArgHelp,
 			},
 		),
 		Args: chainArgs(
@@ -72,35 +78,36 @@ func Root(app clio.Application) *cobra.Command {
 		),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			defer bus.Exit()
-			return runAnalyze(opts)
+			return runAnatomy(opts)
 		},
 	}, opts)
 }
 
-func runAnalyze(opts *analyzeConfig) error {
-	an, err := bonsai.Analyze(bonsai.Config{
+func runAnatomy(opts *anatomyConfig) error {
+	resolved, err := bonsai.Resolve(bonsai.Config{
 		Dir:         opts.Dir,
 		Target:      opts.Target,
 		Binary:      opts.Binary,
 		Controlled:  opts.Controlled,
 		Ignore:      opts.Ignore,
 		Unlock:      opts.Unlock,
-		Blame:       opts.Blame,
 		Why:         opts.Why,
 		HideIgnored: opts.HideIgnored,
 	})
 	if err != nil {
 		return err
 	}
+	defer resolved.Close()
 
+	rep := resolved.Size()
 	buf := &strings.Builder{}
 	switch strings.ToLower(opts.Output) {
 	case formatTable:
-		err = report.WriteTable(buf, an, opts.Top, colorEnabled())
+		err = report.WriteSizeTable(buf, &rep, opts.Top, opts.Sections, colorEnabled())
 	case formatMarkdown:
-		err = report.WriteMarkdown(buf, an, opts.Top)
+		err = report.WriteSizeMarkdown(buf, &rep, opts.Top, opts.Sections)
 	case formatJSON:
-		err = report.WriteJSON(buf, an)
+		err = report.WriteJSON(buf, &rep)
 	default:
 		err = fmt.Errorf("unknown format: %s", opts.Output)
 	}
@@ -109,6 +116,5 @@ func runAnalyze(opts *analyzeConfig) error {
 	}
 
 	bus.Report(buf.String())
-
 	return nil
 }

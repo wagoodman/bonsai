@@ -127,34 +127,27 @@ func TestAttributeFromSymbols(t *testing.T) {
 	}
 }
 
-const testBinarySource = `package main
+// binaryTargets are the GOOS values whose object format bonsai reads: Mach-O, ELF, and PE.
+// The example is cross-compiled to each so every reader is exercised regardless of the host.
+var binaryTargets = []string{"darwin", "linux", "windows"}
 
-import (
-	"fmt"
-	"strings"
-)
-
-func main() {
-	fmt.Println(strings.ToUpper("hello bonsai"))
-}
-`
-
-// buildTestBinary compiles a tiny module to a real executable so the platform-specific binary
-// reader (Mach-O/ELF/PE) and full attribution path can be exercised end-to-end. Skips when the
-// toolchain is unavailable or in -short mode, since it shells out to `go build`.
-func buildTestBinary(t *testing.T, stripped bool) string {
+// buildExample cross-compiles testdata/binexample for goos to a real executable, so the
+// platform-specific reader and full attribution path can be exercised end-to-end. CGO is
+// disabled to force pure-Go internal linking, which makes cross-compilation hermetic (no C
+// toolchain) and lets `-s -w` fully strip the symbol table. Skips when the toolchain is
+// unavailable or in -short mode, since it shells out to `go build`.
+func buildExample(t *testing.T, goos string, stripped bool) string {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("skipping real-binary build in -short mode")
+		t.Skip("skipping cross-compiled binary build in -short mode")
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")
 	}
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/testbin\n\ngo 1.21\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(testBinarySource), 0o644))
+	dir, err := filepath.Abs(filepath.Join("testdata", "binexample"))
+	require.NoError(t, err)
 
-	out := filepath.Join(dir, "testbin")
+	out := filepath.Join(t.TempDir(), "binexample")
 	args := []string{"build", "-o", out}
 	if stripped {
 		args = append(args, "-ldflags=-s -w")
@@ -162,34 +155,50 @@ func buildTestBinary(t *testing.T, stripped bool) string {
 	args = append(args, ".")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH=amd64")
 	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, b)
+		t.Fatalf("cross-compiling example for %s: %v\n%s", goos, err, b)
 	}
 	return out
 }
 
 func TestLoadBinaryUnstripped(t *testing.T) {
-	info, err := loadBinary(buildTestBinary(t, false))
-	require.NoError(t, err)
+	for _, goos := range binaryTargets {
+		t.Run(goos, func(t *testing.T) {
+			info, err := loadBinary(buildExample(t, goos, false))
+			require.NoError(t, err)
 
-	assert.False(t, info.Stripped, "a default build carries a symbol table")
-	assert.Positive(t, info.FileSize)
-	assert.Positive(t, info.SectionsSize)
-	assert.Positive(t, info.CodeSize)
-	assert.Positive(t, info.DataSize, "unstripped builds attribute named data too")
-	assert.NotEmpty(t, info.Sections)
-	// buildinfo reports the module; symbol attribution buckets the entrypoint code under "main".
-	assert.Equal(t, "example.com/testbin", info.MainModule)
-	assert.Contains(t, info.SelfSize, "main")
-	assert.Contains(t, info.SelfSize, "runtime")
+			assert.False(t, info.Stripped, "a default build carries a symbol table")
+			assert.Positive(t, info.FileSize)
+			assert.Positive(t, info.SectionsSize)
+			assert.Positive(t, info.CodeSize)
+			assert.Positive(t, info.DataSize, "unstripped builds attribute named data too")
+			assert.NotEmpty(t, info.Sections)
+			// buildinfo reports the module; symbol attribution buckets entrypoint code under "main".
+			assert.Equal(t, "example.com/binexample", info.MainModule)
+			assert.Contains(t, info.SelfSize, "main")
+			assert.Contains(t, info.SelfSize, "runtime")
+
+			if goos == "windows" {
+				// PE has no named gopclntab section; its bytes fold into .rdata delta-fill.
+				assert.Zero(t, info.PclntabSize)
+			} else {
+				assert.Positive(t, info.PclntabSize)
+			}
+		})
+	}
 }
 
 func TestLoadBinaryStripped(t *testing.T) {
-	info, err := loadBinary(buildTestBinary(t, true))
-	require.NoError(t, err)
+	for _, goos := range binaryTargets {
+		t.Run(goos, func(t *testing.T) {
+			info, err := loadBinary(buildExample(t, goos, true))
+			require.NoError(t, err)
 
-	assert.True(t, info.Stripped, "`-s -w` removes the symbol table")
-	assert.Positive(t, info.CodeSize, "code is recovered from gopclntab even when stripped")
-	assert.Zero(t, info.DataSize, "the stripped path attributes executable code only")
-	assert.NotEmpty(t, info.SelfSize)
+			assert.True(t, info.Stripped, "`-s -w` removes the symbol table")
+			assert.Positive(t, info.CodeSize, "code is recovered from gopclntab even when stripped")
+			assert.Zero(t, info.DataSize, "the stripped path attributes executable code only")
+			assert.NotEmpty(t, info.SelfSize)
+		})
+	}
 }

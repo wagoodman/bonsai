@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/wagoodman/bonsai/internal/bus"
@@ -57,40 +56,6 @@ type ModuleSize struct {
 	Why       *ImportNode  `json:"why,omitempty"` // who imports this, traced back to 1st-class code
 }
 
-// Analysis is the complete result of attributing a binary's size to its modules and
-// estimating the cost/benefit of pruning each direct dependency.
-type Analysis struct {
-	BinarySize    uint64          `json:"binarySize"`    // analyzed file size on disk
-	AccountedSize uint64          `json:"accountedSize"` // file-backed, non-debug sections (~ stripped binary size)
-	CodeSize      uint64          `json:"codeSize"`      // executable code
-	DataSize      uint64          `json:"dataSize"`      // named data (rodata/data globals)
-	PclntabSize   uint64          `json:"pclntabSize"`   // gopclntab metadata (distributed proportionally)
-	StdSize       uint64          `json:"stdSize"`       // standard library
-	MainSize      uint64          `json:"mainSize"`      // main module
-	MainModule    string          `json:"mainModule"`
-	GeneratedSize uint64          `json:"generatedSize"` // compiler-generated + anonymous (pooled constants, type metadata)
-	Stripped      bool            `json:"stripped"`      // true if only code could be attributed
-	Sections      []SectionInfo   `json:"sections"`
-	Modules       []ModuleSize    `json:"modules"`
-	Plan          []PrunePlanStep `json:"prunePlan,omitempty"` // greedy ordered prune plan (marginal savings)
-	Blame         []ModuleBlame   `json:"blame,omitempty"`     // Shapley fair-blame per target (opt-in)
-	GoFloor       GoFloor         `json:"goFloor"`             // lowest go directive the owned modules can declare, given their deps
-	HideIgnored   bool            `json:"-"`                   // presentation: drop ignored modules instead of dimming them
-}
-
-// Analyze resolves the build graph for the configured module (or prebuilt binary) and
-// joins size attribution, tree-shake, and coupling signals into a single Analysis. With
-// cfg.Binary set it analyzes that prebuilt artifact; otherwise it builds cfg.Target from
-// cfg.Dir and analyzes the result.
-func Analyze(cfg Config) (*Analysis, error) {
-	bin, g, cleanup, err := resolve(cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	return analyze(bin, g, optsFrom(cfg)), nil
-}
-
 // resolve produces the analyzed binary and its build graph for cfg, shared by the static
 // report and the interactive Session. It builds from source (capturing -dumpdep reachability)
 // unless cfg.Binary selects a prebuilt artifact. The returned cleanup removes any temporary
@@ -125,13 +90,13 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	key, cacheable := resolveCacheKey(dir, target)
 	if cacheable {
 		if bin, g, err := loadResolveCache(key); err == nil {
-			cacheTask := startTask("Load cached analysis", "loading cached analysis", "loaded cached analysis (same commit)")
+			cacheTask := startTask("Load cached analysis", "Loading cached analysis", "Loaded cached analysis (same commit)")
 			cacheTask.SetCompleted()
 			return bin, g, func() {}, nil
 		}
 	}
 
-	buildTask := startTask("Build binary", "building binary", "binary built")
+	buildTask := startTask("Build binary", "Building binary", "Binary built")
 	arts, cleanup, err := buildForAnalysis(dir, target)
 	if err != nil {
 		buildTask.SetError(err)
@@ -139,7 +104,7 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	}
 	buildTask.SetCompleted()
 
-	loadTask := startTask("Load binary", "loading binary", "binary loaded")
+	loadTask := startTask("Load binary", "Loading binary", "Binary loaded")
 	bin, err := loadBinary(arts.Binary)
 	if err != nil {
 		loadTask.SetError(err)
@@ -148,7 +113,7 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	}
 	loadTask.SetCompleted()
 
-	graphTask := startTask("Resolve build graph", "resolving build graph", "build graph resolved")
+	graphTask := startTask("Resolve build graph", "Resolving build graph", "Build graph resolved")
 	g, err := loadBuildGraph(dir, target, "", "") // built for host
 	if err != nil {
 		graphTask.SetError(err)
@@ -196,7 +161,7 @@ type analyzeOpts struct {
 // module source (for the build graph and coupling) but never rebuild — a stripped binary
 // simply yields code-only attribution, and reachability uses source-level imports.
 func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
-	loadTask := startTask("Load binary", "loading binary", "binary loaded")
+	loadTask := startTask("Load binary", "Loading binary", "Binary loaded")
 	bin, err := loadBinary(cfg.Binary)
 	if err != nil {
 		loadTask.SetError(err)
@@ -220,7 +185,7 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 		}
 	}
 
-	graphTask := startTask("Resolve build graph", "resolving build graph", "build graph resolved")
+	graphTask := startTask("Resolve build graph", "Resolving build graph", "Build graph resolved")
 	g, err := loadBuildGraph(dir, target, bin.GOOS, bin.GOARCH)
 	if err != nil {
 		graphTask.SetError(err)
@@ -229,112 +194,6 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 	graphTask.SetCompleted()
 
 	return bin, g, nil
-}
-
-func analyze(bin *binaryInfo, g *buildGraph, opts analyzeOpts) *Analysis { //nolint:funlen // sequential analysis pipeline; clearer as one pass than fragmented across helpers
-	an := &Analysis{
-		BinarySize:    bin.FileSize,
-		AccountedSize: bin.SectionsSize,
-		CodeSize:      bin.CodeSize,
-		DataSize:      bin.DataSize,
-		PclntabSize:   bin.PclntabSize,
-		MainModule:    g.mainModule,
-		Stripped:      bin.Stripped,
-		Sections:      bin.Sections,
-		HideIgnored:   opts.hideIgnored,
-	}
-
-	bySize := map[string]uint64{}
-	for pkgPath, sz := range bin.SelfSize {
-		mod, ok := g.moduleForImportPath(pkgPath)
-		switch {
-		case !ok && (pkgPath == "" || pkgPath[0] == '<'):
-			an.GeneratedSize += sz // compiler-generated / anonymous, no real package
-		case !ok:
-			an.StdSize += sz // standard library (no module)
-		case mod == g.mainModule:
-			an.MainSize += sz
-			bySize[mod] += sz
-		default:
-			bySize[mod] += sz
-		}
-	}
-
-	attrTask := startTask("Attribute size", "attributing size", "size attributed")
-	// classify modules (sets g.controlled, so reachability severs the right edges) before any
-	// reachability work, then build the dominator model that drives realistic prune savings.
-	cls := classify(g, opts.controlled, opts.locked, opts.unlock)
-	baseReachable := g.reachable(nil)
-	dom := g.buildDomModel(bin.SelfSize, baseReachable, cls)
-	blockers := g.blockerSets(cls)
-	prunes := g.pruneResults(bin.SelfSize, baseReachable, cls, dom, blockers)
-
-	// importers backs the "why is this here?" trees: who imports a module, traced to 1st-class
-	// code. Computed once and shared by the largest-modules and prune-plan rendering.
-	var importers map[string]map[string]bool
-	if opts.why {
-		importers = g.moduleImporters(baseReachable)
-	}
-
-	// coupling needs the main module source tree; skip it when analyzing a prebuilt binary
-	// whose source we couldn't locate.
-	var coup map[string]*Coupling
-	if g.mainModDir != "" {
-		coup, _ = scanCoupling(g)
-	}
-
-	for mod, sz := range bySize {
-		ms := ModuleSize{
-			Module:    mod,
-			Size:      sz,
-			Direct:    g.directMods[mod],
-			Class:     cls.classOf(mod).String(),
-			GoVersion: g.goVersionOf(mod),
-			InBuild:   true,
-			Ignored:   cls.isLocked(mod),
-		}
-		if mod != g.mainModule {
-			ms.Coupling = coup[mod]
-		}
-		// a prune estimate is offered only for prune targets (non-locked deps reachable by a
-		// cuttable hop out of controlled code); locked deps are core and never suggested.
-		if p := prunes[mod]; p != nil {
-			ms.Prune = p
-		}
-		// attach a why trace for everything that isn't already yours (1st-class/main needs no
-		// explanation).
-		if importers != nil && !owned(cls.classOf(mod)) {
-			ms.Why = importWhy(mod, importers, cls, whyBudget)
-		}
-		an.Modules = append(an.Modules, ms)
-	}
-	sort.Slice(an.Modules, func(i, j int) bool { return an.Modules[i].Size > an.Modules[j].Size })
-
-	// the go-version floor: the lowest `go` directive the owned modules could declare given the
-	// modules actually in the build (every module owning a reachable package).
-	inBuild := map[string]bool{}
-	for ip := range baseReachable {
-		if mod := g.moduleOfPkg[ip]; mod != "" {
-			inBuild[mod] = true
-		}
-	}
-	an.GoFloor = g.goFloor(inBuild, cls)
-	attrTask.SetCompleted()
-
-	planTask := startTask("Compute prune plan", "computing prune plan", "prune plan computed")
-	an.Plan = g.greedyPlan(bin.SelfSize, baseReachable, cls)
-	if importers != nil {
-		attachPlanWhy(an.Plan, importers, cls)
-	}
-	planTask.SetCompleted()
-
-	if opts.blame {
-		blameTask := startTask("Compute blame", "computing fair-blame attribution", "blame computed")
-		an.Blame = g.shapleyBlame(bin.SelfSize, baseReachable, cls)
-		blameTask.SetCompleted()
-	}
-
-	return an
 }
 
 // startTask publishes an indeterminate progress task to the bus; callers should

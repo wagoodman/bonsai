@@ -133,18 +133,18 @@ func importTree(m string, adj map[string]map[string]bool, c *classification, bud
 // importWhy builds the why tree for module m: a reverse walk over importers that terminates at
 // 1st-class modules (the code you control — the satisfying answer to "why is this here?").
 // Returns nil when nothing imports m (it is itself an entrypoint).
-func importWhy(m string, importers map[string]map[string]bool, c *classification, budget int) *ImportNode {
-	return importTree(m, importers, c, budget, whyBreadth, true)
+func importWhy(m string, importers map[string]map[string]bool, c *classification) *ImportNode {
+	return importTree(m, importers, c, whyBudget, whyBreadth, true)
 }
 
 // attachPlanWhy fills in the import-why tree for each pruned module and every non-stdlib
 // module it drags out, so the plan explains who pulled each thing in without a second table.
 func attachPlanWhy(plan []PrunePlanStep, importers map[string]map[string]bool, c *classification) {
 	for i := range plan {
-		plan[i].Why = importWhy(plan[i].Module, importers, c, whyBudget)
+		plan[i].Why = importWhy(plan[i].Module, importers, c)
 		for j := range plan[i].Freed {
 			if f := &plan[i].Freed[j]; !f.Std {
-				f.Why = importWhy(f.Module, importers, c, whyBudget)
+				f.Why = importWhy(f.Module, importers, c)
 			}
 		}
 	}

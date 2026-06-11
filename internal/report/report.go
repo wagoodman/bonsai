@@ -20,29 +20,56 @@ import (
 // colModule is the recurring "module" column header shared across the report's tables.
 const colModule = "MODULE"
 
-// WriteJSON renders the analysis as indented JSON.
-func WriteJSON(w io.Writer, an *bonsai.Analysis) error {
+// WriteJSON renders v as indented JSON — the canonical, complete data for whichever report
+// subject (size, prune, go-version) produced it. The table/markdown views curate; JSON does not.
+func WriteJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(an)
+	return enc.Encode(v)
 }
 
-// WriteTable renders the human-readable report with aligned tables, using ANSI color when
-// color is true (a TTY destination). Shows up to top rows in each ranked table.
-//
-// The report is rendered into a buffer and printed later, so lipgloss's own stdout-based
-// color detection doesn't apply; we force the renderer's profile to match the caller's
-// decision (caller already verified the destination is a color-capable TTY).
-func WriteTable(w io.Writer, an *bonsai.Analysis, top int, color bool) error {
+// setColor forces lipgloss's renderer profile when color is requested. Reports are rendered
+// into a buffer and printed later, so lipgloss's own stdout-based detection doesn't apply; the
+// caller already verified the destination is a color-capable TTY.
+func setColor(color bool) {
 	if color {
 		lipgloss.SetColorProfile(termenv.ANSI)
 	}
-	return (&report{w: w, top: top, pal: palette{on: color}}).write(an)
 }
 
-// WriteMarkdown renders the report with markdown headings and fenced/pipe tables (no color).
-func WriteMarkdown(w io.Writer, an *bonsai.Analysis, top int) error {
-	return (&report{w: w, top: top, md: true}).write(an)
+// WriteSizeTable renders the binary anatomy (size by content and by owner, largest modules) as
+// aligned color tables. The section layout is shown only when sections is true.
+func WriteSizeTable(w io.Writer, rep *bonsai.SizeReport, top int, sections, color bool) error {
+	setColor(color)
+	return (&report{w: w, top: top, sections: sections, pal: palette{on: color}}).writeSize(rep)
+}
+
+// WriteSizeMarkdown renders the anatomy with markdown headings and pipe tables (no color).
+func WriteSizeMarkdown(w io.Writer, rep *bonsai.SizeReport, top int, sections bool) error {
+	return (&report{w: w, top: top, sections: sections, md: true}).writeSize(rep)
+}
+
+// WritePruneTable renders the prune subject (candidates, greedy plan, optional fair-blame) as
+// aligned color tables.
+func WritePruneTable(w io.Writer, rep *bonsai.PruneReport, top int, color bool) error {
+	setColor(color)
+	return (&report{w: w, top: top, pal: palette{on: color}}).writePrune(rep)
+}
+
+// WritePruneMarkdown renders the prune subject with markdown headings and pipe tables.
+func WritePruneMarkdown(w io.Writer, rep *bonsai.PruneReport, top int) error {
+	return (&report{w: w, top: top, md: true}).writePrune(rep)
+}
+
+// WriteGoFloorTable renders the go-version floor subject.
+func WriteGoFloorTable(w io.Writer, f bonsai.GoFloor, color bool) error {
+	setColor(color)
+	return (&report{w: w, pal: palette{on: color}}).writeGoFloor(f)
+}
+
+// WriteGoFloorMarkdown renders the go-version floor with markdown headings.
+func WriteGoFloorMarkdown(w io.Writer, f bonsai.GoFloor) error {
+	return (&report{w: w, md: true}).writeGoFloor(f)
 }
 
 // palette gates ANSI styling: when off, every helper returns its input unchanged so the
@@ -74,29 +101,53 @@ func (p palette) strong(s string) string { return p.render(styStrong, s) }
 
 // report carries the rendering mode and writer through the section helpers.
 type report struct {
-	w   io.Writer
-	top int
-	md  bool
-	pal palette
+	w        io.Writer
+	top      int
+	md       bool
+	sections bool // anatomy: render the section-layout block (off by default; --sections)
+	pal      palette
 }
 
-func (r *report) write(an *bonsai.Analysis) error {
-	r.summary(an)
-	r.breakdown(an)
-	r.sections(an)
-	r.largestModules(an)
-	r.pruneCandidates(an)
-	r.prunePlan(an)
-	r.goFloor(an)
-	r.blame(an)
+// writeSize renders the binary anatomy: how big it is and what occupies the space.
+func (r *report) writeSize(rep *bonsai.SizeReport) error {
+	r.summary(rep)
+	r.breakdown(rep)
+	if r.sections {
+		r.sectionsBlock(rep)
+	}
+	r.largestModules(rep)
+	r.footer()
 	return nil
+}
+
+// writePrune renders the prune subject: candidates, the greedy plan, and optional fair-blame.
+func (r *report) writePrune(rep *bonsai.PruneReport) error {
+	r.pruneCandidates(rep)
+	r.prunePlan(rep)
+	r.blame(rep)
+	return nil
+}
+
+// writeGoFloor renders the go-version floor subject.
+func (r *report) writeGoFloor(f bonsai.GoFloor) error {
+	r.goFloor(f)
+	return nil
+}
+
+// footer points readers to the sibling subjects, since anatomy deliberately carries no prune or
+// go-version analysis. Skipped in markdown, which is usually embedded rather than browsed.
+func (r *report) footer() {
+	if r.md {
+		return
+	}
+	fmt.Fprintf(r.w, "%s\n", r.pal.dim("→ bonsai prune       which dependencies to cut, and in what order"))
+	fmt.Fprintf(r.w, "%s\n", r.pal.dim("→ bonsai go-version  the lowest go directive you can declare"))
 }
 
 // goFloor reports the lowest `go` directive the owned (main + 1st-class) modules could declare,
 // the headroom available to reclaim right now (your declared version vs the dep-imposed floor),
 // and the dependencies pinning that floor — the modules to prune to push it lower.
-func (r *report) goFloor(an *bonsai.Analysis) {
-	f := an.GoFloor
+func (r *report) goFloor(f bonsai.GoFloor) {
 	if f.Version == "" {
 		r.heading("Go version floor", "no dependency declares a `go` directive — nothing constrains your minimum")
 		return
@@ -151,7 +202,7 @@ func (r *report) heading(title, subtitle string) {
 	}
 }
 
-func (r *report) summary(an *bonsai.Analysis) {
+func (r *report) summary(an *bonsai.SizeReport) {
 	if r.md {
 		fmt.Fprintf(r.w, "# binary size analysis\n\n")
 	} else {
@@ -173,7 +224,7 @@ func (r *report) summary(an *bonsai.Analysis) {
 	fmt.Fprintln(r.w)
 }
 
-func (r *report) breakdown(an *bonsai.Analysis) {
+func (r *report) breakdown(an *bonsai.SizeReport) {
 	denom := an.AccountedSize
 	var thirdParty uint64
 	for _, m := range an.Modules {
@@ -196,7 +247,7 @@ func (r *report) breakdown(an *bonsai.Analysis) {
 	fmt.Fprintln(r.w)
 }
 
-func (r *report) sections(an *bonsai.Analysis) {
+func (r *report) sectionsBlock(an *bonsai.SizeReport) {
 	secs := append([]bonsai.SectionInfo(nil), an.Sections...)
 	sort.Slice(secs, func(i, j int) bool { return secs[i].Size > secs[j].Size })
 
@@ -214,7 +265,7 @@ func (r *report) sections(an *bonsai.Analysis) {
 // largestModules ranks third-party modules by size. With import-why trees present (--why) it
 // renders each entry with its "← imported by" trace beneath; otherwise it keeps the compact
 // table.
-func (r *report) largestModules(an *bonsai.Analysis) {
+func (r *report) largestModules(an *bonsai.SizeReport) {
 	withWhy := false
 	for _, m := range an.Modules {
 		if m.Why != nil {
@@ -254,7 +305,7 @@ func (r *report) largestModules(an *bonsai.Analysis) {
 }
 
 // largestModulesTable is the compact ranked table shown when import-why traces are off.
-func (r *report) largestModulesTable(an *bonsai.Analysis) {
+func (r *report) largestModulesTable(an *bonsai.SizeReport) {
 	r.heading("Largest modules by size",
 		"class is relative to code you control: 1st = yours, 2nd = direct dep of yours, 3rd = transitive (--why explains each)")
 	rows := [][]string{}
@@ -291,7 +342,7 @@ func (r *report) moduleRow(m bonsai.ModuleSize, denom uint64) {
 	fmt.Fprintf(r.w, "  %s\n", row)
 }
 
-func (r *report) pruneCandidates(an *bonsai.Analysis) {
+func (r *report) pruneCandidates(an *bonsai.PruneReport) {
 	prunable := make([]bonsai.ModuleSize, 0, len(an.Modules))
 	for _, m := range an.Modules {
 		if m.Prune != nil {
@@ -342,7 +393,7 @@ func (r *report) pruneHeadline(m bonsai.ModuleSize) {
 	fmt.Fprintf(r.w, "  %s\n\n", r.pal.good(line))
 }
 
-func (r *report) prunePlan(an *bonsai.Analysis) {
+func (r *report) prunePlan(an *bonsai.PruneReport) {
 	if len(an.Plan) == 0 {
 		return
 	}
@@ -466,7 +517,7 @@ func importerNote(importers int) string {
 	}
 }
 
-func (r *report) blame(an *bonsai.Analysis) {
+func (r *report) blame(an *bonsai.PruneReport) {
 	if len(an.Blame) == 0 {
 		return
 	}

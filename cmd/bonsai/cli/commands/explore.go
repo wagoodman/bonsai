@@ -10,12 +10,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/prunetui"
+	"github.com/wagoodman/bonsai/cmd/bonsai/internal/ui"
 	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
 // Explore is the `bonsai explore` command: an interactive prune explorer. It is a plain cobra
 // command (not wired through clio) so its full-screen TUI owns stdin without the progress
-// event-loop UI contending for it. The build/analysis runs first with simple stderr status.
+// event-loop UI contending for it. The build/analysis runs first under the same task-progress
+// UI the root command shows (via ui.RunWithProgress), which tears down before the TUI starts.
 func Explore(id clio.Identification) *cobra.Command {
 	// the TUI shows "bonsai · <version>" in its status bar; hide the unset build-time default
 	// ("[not provided]" from main.go) that ldflags overrides on real releases.
@@ -32,7 +34,7 @@ func Explore(id clio.Identification) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "explore [DIR]",
-		Short: "interactively explore which dependencies to prune (what-if TUI)",
+		Short: "interactively explore what happens to your binary size when you prune certain dependencies",
 		Long: "explore opens a what-if TUI: every dependency candidate starts selected for removal — " +
 			"deselect the ones you need with space. The summary bar shows the projected binary size and how " +
 			"many modules actually get pruned; the right panes show what the highlighted module drags out " +
@@ -66,8 +68,14 @@ func Explore(id clio.Identification) *cobra.Command {
 }
 
 func runExplore(cfg bonsai.Config, version string) error {
-	fmt.Fprintln(os.Stderr, "building and analyzing… (this can take a few seconds)")
-	session, err := bonsai.NewSession(cfg)
+	var session *bonsai.Session
+	// run the build/analysis under the same ✔ task-progress UI the root command shows; it tears
+	// down before the full-screen TUI below takes stdin.
+	err := ui.RunWithProgress(false, func() error {
+		var e error
+		session, e = bonsai.NewSession(cfg)
+		return e
+	})
 	if err != nil {
 		return err
 	}
