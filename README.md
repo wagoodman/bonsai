@@ -61,7 +61,7 @@ The same analysis comes out in whatever form fits who's reading it:
 
 - **Tables** (`--output table`, the default): for you, at the terminal. The quick read.
 - **JSON** (`--output json`): for machines, like scripts, CI gates, your own tooling.
-- **The `explore` TUI**: for grokking. When you want to try prunes and watch them interact.
+- **The TUI** (`bonsai` with no subcommand): for grokking. When you want to try prunes and watch them interact.
 - **MCP** (`bonsai mcp`): for an AI agent editing your codebase.
 
 ### Tables, the quick read
@@ -91,7 +91,7 @@ So the go-sdk module is a quarter its own code, and the rest is the cluster it p
 ### The TUI
 
 ```sh
-bonsai explore .
+bonsai .
 ```
 
 Everything starts checked (in your build). Uncheck a dependency and the header reprojects the size right away, while the side panes show what it drags out, what survives because something else still needs it, and why it's in the build. The `M`/`1`/`2`/`3`/`L` column is the four classes above; reclassify on the fly and watch the candidate set move. Nothing is applied (enter just prints the prune set), but lock and class edits save to `.bonsai.yaml`, the same file every command reads. Press `?` for the legend.
