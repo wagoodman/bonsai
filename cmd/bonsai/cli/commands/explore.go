@@ -60,10 +60,10 @@ func wireExplore(cmd *cobra.Command, id clio.Identification) {
 
 func runExplore(cmd *cobra.Command, cfg bonsai.Config, version string) error {
 	// explore bypasses clio, so .bonsai.yaml isn't auto-loaded; fold in the analysis lock/
-	// controlled/unlock lists (the single source of truth, written by `bonsai config lock` and
-	// explore itself) unioned with any flags. baseline is the merged starting state we diff
-	// against on exit to decide whether to write the user's lock/class edits back.
-	path := resolveConfigPath(cmd)
+	// controlled/unlock lists (the single source of truth, written by `bonsai lock` and explore
+	// itself) unioned with any flags. baseline is the merged starting state we diff against on
+	// exit to decide whether to write the user's lock/class edits back.
+	path := resolveConfigPath(cmd, cfg.Dir)
 	if lock, controlled, unlock, err := configedit.ReadBuild(path); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", path, err)
 	} else {

@@ -102,7 +102,7 @@ Everything starts checked (in your build). Uncheck a dependency and the header r
 bonsai mcp        # a Model Context Protocol server over stdio
 ```
 
-Why a server instead of just shelling out to the CLI? Because the CLI rebuilds your target on every run, and an agent doesn't ask once: it orients, locates cuts, edits, re-measures, repeats. The server builds once and keeps it warm, rebuilding only when you actually change the source, so that loop stays cheap. Point an MCP client at it and the agent uses bonsai as a yardstick, editing with intent instead of guessing. Five tools, each one focused analysis:
+Why a server instead of just shelling out to the CLI? Because the CLI rebuilds your target on every run, and an agent doesn't ask once: it orients, locates cuts, edits, re-measures, repeats. The server builds once and keeps it warm, rebuilding only when you actually change the source, so that loop stays cheap. Point an MCP client at it and the agent uses bonsai as a yardstick, editing with intent instead of guessing. It honors the lock and class lists in your `.bonsai.yaml` just like every other command, so the agent respects the locks you curated even when it doesn't pass them itself. Five tools, each one focused analysis:
 
 | Tool | The agent's question |
 |---|---|

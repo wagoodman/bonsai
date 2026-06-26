@@ -24,7 +24,7 @@ vars:
 
 tasks:
   default:
-    # desc: Run all validation tasks
+    desc: Run all validation tasks
     aliases:
       - pr-validations
       - validations
@@ -157,6 +157,16 @@ tasks:
 
   ## Build-related tasks #################################
 
+  goreleaser-config:
+    internal: true
+    deps: [tmpdir]
+    requires:
+      vars: [DIST]
+    # goreleaser v2 has no --dist flag, so we append the dist dir to a temp copy of the config
+    cmd: |
+      cat .goreleaser.yaml > {{ .TMP_DIR }}/goreleaser.yaml
+      echo "dist: {{ .DIST }}" >> {{ .TMP_DIR }}/goreleaser.yaml
+
   changelog:
     desc: Generate a changelog
     deps: [tools]
@@ -171,11 +181,10 @@ tasks:
     desc: Create a snapshot release
     aliases:
       - build
-    deps: [tools, tmpdir]
+    deps: [tools]
     cmds:
-      - cmd: |
-          cat .goreleaser.yaml > {{ .TMP_DIR }}/goreleaser.yaml
-          echo "dist: {{ .SNAPSHOT_DIR }}" >> {{ .TMP_DIR }}/goreleaser.yaml
+      - task: goreleaser-config
+        vars: { DIST: "{{ .SNAPSHOT_DIR }}" }
       - cmd: "{{ .GORELEASER }} release --clean --skip=publish --skip=sign --snapshot --config {{ .TMP_DIR }}/goreleaser.yaml"
 
   ## Release tasks #################################
@@ -196,9 +205,8 @@ tasks:
       - "{{ .CHRONICLE }} -vvv > {{ .CHANGELOG }}"
       - cmd: "cat {{ .CHANGELOG }}"
         silent: true
-      - cmd: |
-          cat .goreleaser.yaml > {{ .TMP_DIR }}/goreleaser.yaml
-          echo "dist: dist" >> {{ .TMP_DIR }}/goreleaser.yaml
+      - task: goreleaser-config
+        vars: { DIST: dist }
       - "{{ .GORELEASER }} release --clean --release-notes {{ .CHANGELOG }} --config {{ .TMP_DIR }}/goreleaser.yaml"
 
   ci-check:

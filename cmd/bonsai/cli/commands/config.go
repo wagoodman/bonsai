@@ -3,7 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
-	"sort"
+	"strings"
 
 	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
@@ -19,17 +19,18 @@ func Config(app clio.Application) *cobra.Command {
 	return clio.ConfigCommand(app, nil)
 }
 
-// Lock is the `bonsai lock` command: an interactive editor for the config's lock list. It is a
-// plain cobra command (its RunE isn't wrapped with the progress event-loop UI), so it can drive
-// its own terminal UI without contending for stdin.
+// Lock is the `bonsai lock` command: the build-free editor for the config's module-policy lists
+// (locked / controlled / unlocked). It is a plain cobra command (its RunE isn't wrapped with the
+// progress event-loop UI), so it can drive its own terminal UI without contending for stdin.
 func Lock() *cobra.Command {
 	var target string
 	cmd := &cobra.Command{
 		Use:   "lock [DIR]",
-		Short: "interactively edit the lock list (modules never suggested for pruning)",
-		Long: "lock opens a fuzzy multi-select of the target module's dependencies. Type to filter, " +
-			"space to toggle, enter to save, esc to cancel. The selection is written to the lock list in " +
-			"the config file, preserving the rest of the file and its comments.",
+		Short: "interactively edit the module policy lists (locked / controlled / unlocked)",
+		Long: "lock opens the target module's dependencies. Mark rows with space (a marks all shown), " +
+			"then press l/c/u to lock, control, or unlock the marked set; i adds a free-form pattern row " +
+			"(e.g. github.com/anchore/...); / filters; enter saves, esc cancels. Edits are written to the " +
+			"analysis lists in the config file, preserving the rest of the file and its comments.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			dir := "."
@@ -45,9 +46,9 @@ func Lock() *cobra.Command {
 }
 
 func runConfigLock(cmd *cobra.Command, dir, target string) error {
-	path := resolveConfigPath(cmd)
+	path := resolveConfigPath(cmd, dir)
 
-	current, err := configedit.ReadLock(path)
+	lock, controlled, unlock, err := configedit.ReadBuild(path)
 	if err != nil {
 		return err
 	}
@@ -61,21 +62,8 @@ func runConfigLock(cmd *cobra.Command, dir, target string) error {
 		return fmt.Errorf("no dependency modules found in %s", dir)
 	}
 
-	items := make([]locktui.Item, len(mods))
-	for i, m := range mods {
-		items[i] = locktui.Item{Module: m.Path, Direct: m.Direct}
-	}
-
-	// pre-select modules already covered by the current lock list; carry forward any
-	// entries that aren't concrete dependency modules (globs, patterns, stale modules) so
-	// the editor never silently drops them.
-	candidates := map[string]bool{}
-	for _, it := range items {
-		candidates[it.Module] = true
-	}
-	preselected, extras := splitLock(current, candidates)
-
-	chosen, ok, err := locktui.Run(items, preselected)
+	items := buildItems(mods, lock, controlled, unlock)
+	final, ok, err := locktui.Run(items, locktui.Lists{Locked: lock, Controlled: controlled, Unlock: unlock})
 	if err != nil {
 		return err
 	}
@@ -84,44 +72,51 @@ func runConfigLock(cmd *cobra.Command, dir, target string) error {
 		return nil
 	}
 
-	final := make([]string, 0, len(extras)+len(chosen))
-	final = append(final, extras...)
-	final = append(final, chosen...)
-	sort.Strings(final)
-	if err := configedit.WriteLock(path, final); err != nil {
+	// only write when something changed versus what was read (same guard explore uses); the
+	// lists are normalized so the on-disk diff stays minimal.
+	base := bonsai.ClassInputs{Locked: sortedUnique(lock), Controlled: sortedUnique(controlled), Unlock: sortedUnique(unlock)}
+	next := bonsai.ClassInputs{Locked: sortedUnique(final.Locked), Controlled: sortedUnique(final.Controlled), Unlock: sortedUnique(final.Unlock)}
+	if sameInputs(base, next) {
+		fmt.Fprintln(os.Stderr, "no changes; config unchanged")
+		return nil
+	}
+	if err := configedit.WriteBuild(path, next.Locked, next.Controlled, next.Unlock); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "wrote %d lock entr%s to %s\n", len(final), plural(len(final)), path)
+	fmt.Fprintf(os.Stderr, "wrote module policy lists to %s\n", path)
 	return nil
 }
 
-// splitLock divides the current lock entries into modules to pre-check (those that are
-// concrete dependency modules) and extras to preserve verbatim (globs, "path/..." patterns,
-// or modules no longer in the graph).
-func splitLock(current []string, candidates map[string]bool) (preselected map[string]bool, extras []string) {
-	preselected = map[string]bool{}
-	for _, e := range current {
-		if candidates[e] {
-			preselected[e] = true
-		} else {
-			extras = append(extras, e)
+// buildItems is the candidate row set: every concrete dependency module, plus a pattern row for
+// any existing list entry that isn't a concrete module (globs, "path/..." patterns, or stale
+// modules) so the editor shows them with their badges and never silently drops them.
+func buildItems(mods []bonsai.ModuleRef, lists ...[]string) []locktui.Item {
+	concrete := make(map[string]bool, len(mods))
+	items := make([]locktui.Item, 0, len(mods))
+	for _, m := range mods {
+		concrete[m.Path] = true
+		items = append(items, locktui.Item{Module: m.Path, Direct: m.Direct})
+	}
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, e := range list {
+			e = strings.TrimSpace(e)
+			if e == "" || concrete[e] || seen[e] {
+				continue
+			}
+			seen[e] = true
+			items = append(items, locktui.Item{Module: e, Pattern: true})
 		}
 	}
-	return preselected, extras
+	return items
 }
 
 // resolveConfigPath determines which file to edit: the first --config/-c value if given,
-// else the first existing default config file in the current directory (see configedit.FindConfig).
-func resolveConfigPath(cmd *cobra.Command) string {
+// else the first existing default config file in dir (the command's target directory, so a
+// `[DIR]` argument picks up that directory's .bonsai.yaml, not the process cwd).
+func resolveConfigPath(cmd *cobra.Command, dir string) string {
 	if files, err := cmd.Flags().GetStringArray("config"); err == nil && len(files) > 0 {
 		return files[0]
 	}
-	return configedit.FindConfig(".")
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return "y"
-	}
-	return "ies"
+	return configedit.FindConfig(dir)
 }

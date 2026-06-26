@@ -15,6 +15,13 @@ type patternMatcher struct {
 	patterns []string
 }
 
+// Matches reports whether module is covered by any of the given patterns (exact path,
+// "foo/...", bare "foo...", or path.Match glob). It exposes the lock-list matcher to the
+// interactive editors so they can show which modules a pattern already covers, no build needed.
+func Matches(patterns []string, module string) bool {
+	return newPatternMatcher(patterns).match(module)
+}
+
 func newPatternMatcher(patterns []string) patternMatcher {
 	cleaned := make([]string, 0, len(patterns))
 	for _, p := range patterns {
