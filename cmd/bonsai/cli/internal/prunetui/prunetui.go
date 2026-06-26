@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 
+	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/tui"
 	"github.com/wagoodman/bonsai/internal/bonsai"
 	"github.com/wagoodman/bonsai/internal/humanize"
 )
@@ -31,18 +32,18 @@ const (
 )
 
 var (
+	// shared with the lock editor (see internal/tui) so the two TUIs read as one tool.
+	styHelp = tui.Help
+	styDim  = tui.Dim
+	styGood = tui.Good
+	styCyan = tui.Cyan
+	styRow  = tui.RowCursor
+
 	styBar    = lipgloss.NewStyle().Bold(true)
-	styHelp   = lipgloss.NewStyle().Faint(true)
-	styDim    = lipgloss.NewStyle().Faint(true)
 	styGold   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class (yours)
-	styGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow: go-floor pinners
-	styCyan   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))   // yellow: go-floor pinners
 	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	styPurple = lipgloss.NewStyle().Foreground(lipgloss.Color("135")) // selection / the module matched elsewhere
-	// cursor row: an explicit purple bar with bright text, rather than Reverse(true) (whose fg/bg
-	// swap over an unset background renders inconsistently across terminals).
-	styRow = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("135"))
 
 	// the panes split with a grey vertical line and a grey-background header bar (not a ─ rule):
 	// both are grey so the line meets the bar at a clean junction instead of the characters crossing.
@@ -52,10 +53,10 @@ var (
 )
 
 const (
-	glyphIn    = "●" // in the binary
-	glyphOut   = "○" // pruned
-	glyphNone  = "·" // present, not a candidate
-	glyphFloor = "△" // this module pins the go-version floor
+	glyphIn    = tui.GlyphOn  // in the binary
+	glyphOut   = tui.GlyphOff // pruned
+	glyphNone  = "·"          // present, not a candidate
+	glyphFloor = "△"          // this module pins the go-version floor
 )
 
 const (
@@ -148,9 +149,7 @@ type model struct {
 }
 
 func newModel(s *bonsai.Session, initial State) model {
-	ti := textinput.New()
-	ti.Prompt = "filter> "
-	ti.Placeholder = "fuzzy match…"
+	ti := tui.NewFilter("fuzzy match…")
 
 	m := model{
 		s:        s,
@@ -267,6 +266,7 @@ func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case keyEsc:
 		m.filter.SetValue("")
+		tui.StyleFilter(&m.filter)
 		m.filtering = false
 		m.rebuildVisible()
 		m.clampCursor()
@@ -281,6 +281,7 @@ func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	prev := m.filter.Value()
 	m.filter, cmd = m.filter.Update(msg)
 	if m.filter.Value() != prev {
+		tui.StyleFilter(&m.filter)
 		m.rebuildVisible()
 		m.clampCursor()
 		m.recompute()
@@ -1111,36 +1112,14 @@ func headerFor(title string, width int, focused bool) string {
 	return style.Width(width).Render(s)
 }
 
-func pad(s string, w, h int) string {
-	lines := strings.Split(s, "\n")
-	for i, ln := range lines {
-		lines[i] = lipgloss.NewStyle().MaxWidth(w).Render(ln)
-	}
-	if len(lines) > h {
-		lines = lines[:h]
-	}
-	for len(lines) < h {
-		lines = append(lines, "")
-	}
-	return lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
-}
+// the layout helpers live in internal/tui (shared with the lock editor); these locals keep the
+// dense view code terse.
+func pad(s string, w, h int) string       { return tui.Pad(s, w, h) }
+func truncate(s string, width int) string { return tui.Truncate(s, width) }
+func fit(s string, w int) string          { return tui.Fit(s, w) }
 
 // humize is a local shorthand for the shared byte formatter, keeping the dense view code readable.
 func humize(b uint64) string { return humanize.Bytes(b) }
-
-func truncate(s string, width int) string {
-	if width < 4 || len(s) <= width {
-		return s
-	}
-	return "…" + s[len(s)-(width-1):]
-}
-
-func fit(s string, w int) string {
-	if lipgloss.Width(s) >= w {
-		return s
-	}
-	return s + strings.Repeat(" ", w-lipgloss.Width(s))
-}
 
 func stripStyle(s string) string {
 	for {
@@ -1182,15 +1161,7 @@ func keys(set map[string]bool) []string {
 	return out
 }
 
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
+func clamp(v, lo, hi int) int { return tui.Clamp(v, lo, hi) }
 
 func max64(a, b uint64) uint64 {
 	if a > b {
