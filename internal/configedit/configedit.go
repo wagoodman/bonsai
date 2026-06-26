@@ -6,8 +6,11 @@ package configedit
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/wagoodman/bonsai/internal"
 )
 
 // the config nests the pattern lists under the "analysis" section (matching the CLI config
@@ -18,6 +21,31 @@ const (
 	controlledKey = "controlled"
 	unlockKey     = "unlock"
 )
+
+// FindConfig resolves the bonsai config file to read within dir (empty dir means the current
+// directory): the first existing default name, else the primary default (".bonsai.yaml" under
+// dir) even if absent, so callers always get a path to hand to ReadBuild (which treats a missing
+// file as empty). This is the non-clio path resolution used by commands and the MCP server that
+// bypass fangs config loading.
+func FindConfig(dir string) string {
+	if dir == "" {
+		dir = "."
+	}
+	defaults := []string{
+		"." + internal.ApplicationName + ".yaml",
+		"." + internal.ApplicationName + ".yml",
+		internal.ApplicationName + ".yaml",
+		internal.ApplicationName + ".yml",
+		"." + internal.ApplicationName + "/config.yaml",
+	}
+	for _, name := range defaults {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return filepath.Join(dir, defaults[0])
+}
 
 // ReadLock returns the lock patterns currently in the config file at path. A missing
 // file or absent lock list yields an empty slice and no error.

@@ -9,6 +9,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFindConfig(t *testing.T) {
+	t.Run("returns existing default", func(t *testing.T) {
+		dir := t.TempDir()
+		want := filepath.Join(dir, ".bonsai.yaml")
+		require.NoError(t, os.WriteFile(want, []byte("analysis:\n"), 0o644))
+		assert.Equal(t, want, FindConfig(dir))
+	})
+
+	t.Run("prefers .yaml over later defaults", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".bonsai.yml"), []byte("analysis:\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".bonsai.yaml"), []byte("analysis:\n"), 0o644))
+		assert.Equal(t, filepath.Join(dir, ".bonsai.yaml"), FindConfig(dir))
+	})
+
+	t.Run("falls back to primary default when none exist", func(t *testing.T) {
+		dir := t.TempDir()
+		assert.Equal(t, filepath.Join(dir, ".bonsai.yaml"), FindConfig(dir))
+	})
+
+	t.Run("empty dir means current directory", func(t *testing.T) {
+		assert.Equal(t, ".bonsai.yaml", FindConfig(""))
+	})
+}
+
 func TestReadLock(t *testing.T) {
 	tests := []struct {
 		name    string

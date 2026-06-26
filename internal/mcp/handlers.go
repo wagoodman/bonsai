@@ -9,10 +9,20 @@ import (
 	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
+// resolve maps the tool input onto an engine config (folding in .bonsai.yaml) and runs fn against
+// the resolved (and cached) target. Centralizing this keeps every tool honoring the config file.
+func (s *Server) resolve(in Input, fn func(*bonsai.Resolved) error) error {
+	cfg, err := in.config()
+	if err != nil {
+		return err
+	}
+	return s.cache.with(cfg, fn)
+}
+
 // anatomy reports the binary's size shape (SizeReport), unchanged from the engine.
 func (s *Server) anatomy(_ context.Context, _ *mcp.CallToolRequest, in Input) (*mcp.CallToolResult, bonsai.SizeReport, error) {
 	var out bonsai.SizeReport
-	err := s.cache.with(in.config(), func(r *bonsai.Resolved) error {
+	err := s.resolve(in, func(r *bonsai.Resolved) error {
 		out = r.Size()
 		return nil
 	})
@@ -23,7 +33,7 @@ func (s *Server) anatomy(_ context.Context, _ *mcp.CallToolRequest, in Input) (*
 // coarse effort verdict, and returns the greedy prune plan.
 func (s *Server) sizeTargets(_ context.Context, _ *mcp.CallToolRequest, in Input) (*mcp.CallToolResult, SizeTargetsOutput, error) {
 	var out SizeTargetsOutput
-	err := s.cache.with(in.config(), func(r *bonsai.Resolved) error {
+	err := s.resolve(in, func(r *bonsai.Resolved) error {
 		rep := r.Prune()
 		out = SizeTargetsOutput{
 			AccountedSize: rep.AccountedSize,
@@ -62,7 +72,7 @@ func (s *Server) sizeTargets(_ context.Context, _ *mcp.CallToolRequest, in Input
 // goFloor reports the dep-imposed go-version floor with the actionable verdict.
 func (s *Server) goFloor(_ context.Context, _ *mcp.CallToolRequest, in Input) (*mcp.CallToolResult, GoFloorOutput, error) {
 	var out GoFloorOutput
-	err := s.cache.with(in.config(), func(r *bonsai.Resolved) error {
+	err := s.resolve(in, func(r *bonsai.Resolved) error {
 		f := r.GoFloor()
 		out = GoFloorOutput{
 			Version:     f.Version,
@@ -80,7 +90,7 @@ func (s *Server) goFloor(_ context.Context, _ *mcp.CallToolRequest, in Input) (*
 // the go-version floor delta (InspectReport), unchanged from the engine.
 func (s *Server) locateCuts(_ context.Context, _ *mcp.CallToolRequest, in InspectInput) (*mcp.CallToolResult, bonsai.InspectReport, error) {
 	var out bonsai.InspectReport
-	err := s.cache.with(in.config(), func(r *bonsai.Resolved) error {
+	err := s.resolve(in.Input, func(r *bonsai.Resolved) error {
 		rep, ierr := r.Inspect(in.Module)
 		if ierr != nil {
 			return ierr
@@ -95,7 +105,7 @@ func (s *Server) locateCuts(_ context.Context, _ *mcp.CallToolRequest, in Inspec
 // the edit loop.
 func (s *Server) measure(_ context.Context, _ *mcp.CallToolRequest, in Input) (*mcp.CallToolResult, MeasureOutput, error) {
 	var out MeasureOutput
-	err := s.cache.with(in.config(), func(r *bonsai.Resolved) error {
+	err := s.resolve(in, func(r *bonsai.Resolved) error {
 		size := r.Size()
 		floor := r.GoFloor()
 		out = MeasureOutput{

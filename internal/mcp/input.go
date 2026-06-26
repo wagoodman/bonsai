@@ -5,7 +5,12 @@
 // builds (or reuses a cached) *bonsai.Resolved and serializes a focused report.
 package mcp
 
-import "github.com/wagoodman/bonsai/internal/bonsai"
+import (
+	"sort"
+
+	"github.com/wagoodman/bonsai/internal/bonsai"
+	"github.com/wagoodman/bonsai/internal/configedit"
+)
 
 // Input is the shared input for the whole-binary tools: how to build (or load) the target and
 // which modules count as 1st-class / locked. It maps directly onto bonsai.Config.
@@ -25,9 +30,13 @@ type InspectInput struct {
 	Module string `json:"module" jsonschema:"the dependency module path to inspect (e.g. github.com/google/go-containerregistry)"`
 }
 
-// config maps the tool input onto the engine's Config.
-func (in Input) config() bonsai.Config {
-	return bonsai.Config{
+// config maps the tool input onto the engine's Config, folding in the project's .bonsai.yaml
+// analysis lists. The MCP server bypasses clio, so the config file isn't auto-loaded; without
+// this an agent that omits lock/controlled/unlock would silently ignore the locks the user
+// curated (and could be told to prune a module they deliberately pinned). Agent-provided
+// patterns are unioned with the file's.
+func (in Input) config() (bonsai.Config, error) {
+	cfg := bonsai.Config{
 		Dir:        in.Dir,
 		Target:     in.Target,
 		Binary:     in.Binary,
@@ -35,4 +44,31 @@ func (in Input) config() bonsai.Config {
 		Locked:     in.Lock,
 		Unlock:     in.Unlock,
 	}
+	lock, controlled, unlock, err := configedit.ReadBuild(configedit.FindConfig(in.Dir))
+	if err != nil {
+		return bonsai.Config{}, err
+	}
+	cfg.Controlled = mergeUnique(cfg.Controlled, controlled)
+	cfg.Locked = mergeUnique(cfg.Locked, lock)
+	cfg.Unlock = mergeUnique(cfg.Unlock, unlock)
+	return cfg, nil
+}
+
+// mergeUnique unions two pattern lists into a sorted, de-duplicated slice (nil if empty), so the
+// merge of agent input and config file is order-independent and keeps the resolve cache key stable.
+func mergeUnique(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range append(append([]string{}, a...), b...) {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }

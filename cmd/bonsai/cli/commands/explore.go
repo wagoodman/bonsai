@@ -10,10 +10,10 @@ import (
 	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
 
-	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/configedit"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/prunetui"
 	"github.com/wagoodman/bonsai/cmd/bonsai/internal/ui"
 	"github.com/wagoodman/bonsai/internal/bonsai"
+	"github.com/wagoodman/bonsai/internal/configedit"
 )
 
 // Explore is the `bonsai explore` command: an interactive prune explorer. It is a plain cobra

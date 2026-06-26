@@ -8,10 +8,9 @@ import (
 	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
 
-	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/configedit"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/locktui"
-	"github.com/wagoodman/bonsai/internal"
 	"github.com/wagoodman/bonsai/internal/bonsai"
+	"github.com/wagoodman/bonsai/internal/configedit"
 )
 
 // Config is the `bonsai config` command (from clio): the base command prints the resolved
@@ -112,24 +111,12 @@ func splitLock(current []string, candidates map[string]bool) (preselected map[st
 }
 
 // resolveConfigPath determines which file to edit: the first --config/-c value if given,
-// else the first existing default config file, else ".<app>.yaml" in the current directory.
+// else the first existing default config file in the current directory (see configedit.FindConfig).
 func resolveConfigPath(cmd *cobra.Command) string {
 	if files, err := cmd.Flags().GetStringArray("config"); err == nil && len(files) > 0 {
 		return files[0]
 	}
-	defaults := []string{
-		"." + internal.ApplicationName + ".yaml",
-		"." + internal.ApplicationName + ".yml",
-		internal.ApplicationName + ".yaml",
-		internal.ApplicationName + ".yml",
-		"." + internal.ApplicationName + "/config.yaml",
-	}
-	for _, p := range defaults {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return defaults[0]
+	return configedit.FindConfig(".")
 }
 
 func plural(n int) string {
