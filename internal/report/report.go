@@ -16,6 +16,7 @@ import (
 
 	"github.com/wagoodman/bonsai/internal/bonsai"
 	"github.com/wagoodman/bonsai/internal/humanize"
+	"github.com/wagoodman/bonsai/internal/style"
 )
 
 // colModule is the recurring "module" column header shared across the report's tables.
@@ -29,13 +30,21 @@ func WriteJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
-// setColor forces lipgloss's renderer profile when color is requested. Reports are rendered
-// into a buffer and printed later, so lipgloss's own stdout-based detection doesn't apply; the
-// caller already verified the destination is a color-capable TTY.
+// setColor pins lipgloss's renderer profile when color is requested. Reports are rendered into
+// a buffer and printed later, so lipgloss's own stdout-based detection doesn't apply; the caller
+// already verified the destination is a color-capable TTY. Match the terminal's real capability
+// (truecolor / 256 / 16) so adaptive 256-color tokens render true — gold stays gold instead of
+// flattening to the nearest of 16 — but never drop below ANSI, so a requested-color report always
+// emits color even on a terminal termenv can't fingerprint.
 func setColor(color bool) {
-	if color {
-		lipgloss.SetColorProfile(termenv.ANSI)
+	if !color {
+		return
 	}
+	profile := termenv.ColorProfile()
+	if profile == termenv.Ascii {
+		profile = termenv.ANSI
+	}
+	lipgloss.SetColorProfile(profile)
 }
 
 // WriteSizeTable renders the binary anatomy (size by content and by owner, largest modules) as
@@ -89,14 +98,16 @@ func WriteInspectMarkdown(w io.Writer, rep *bonsai.InspectReport) error {
 // same rendering code produces plain text for pipes, markdown, and NO_COLOR.
 type palette struct{ on bool }
 
+// these mirror the interactive explorer's styles by sourcing the same semantic tokens from
+// internal/style — the report and the TUI can't drift because there's one definition of each.
 var (
-	styTitle  = lipgloss.NewStyle().Bold(true)
-	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan
-	styDim    = lipgloss.NewStyle().Faint(true)
-	styGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))   // green
-	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))   // yellow
-	styGold   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class/main (yours), matches the explorer
-	styStrong = lipgloss.NewStyle().Bold(true)
+	styTitle  = style.Title
+	styHead   = style.Heading      // section + table-column headers: bold, no hue
+	styDim    = style.Subtle       // percentages, notes, locked rows, secondary text
+	styGood   = style.WinStyle     // freed / saved / reclaimable weight
+	styWarn   = style.CautionStyle // warnings, survivors, go-floor constraints
+	styGold   = style.YoursStyle   // 1st-class / main (the code you control)
+	styStrong = style.Strong       // emphasized sizes and module names
 )
 
 func (p palette) render(s lipgloss.Style, txt string) string {
