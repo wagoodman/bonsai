@@ -18,6 +18,12 @@ func TestPatternMatcher(t *testing.T) {
 		{name: "subtree match", patterns: []string{"github.com/anchore/..."}, module: "github.com/anchore/syft", want: true},
 		{name: "subtree matches root", patterns: []string{"github.com/anchore/..."}, module: "github.com/anchore", want: true},
 		{name: "subtree non-match sibling", patterns: []string{"github.com/anchore/..."}, module: "github.com/anchorex/y", want: false},
+		// a bare trailing "..." (no slash) is Go's prefix wildcard — the form the prune CLI
+		// regression used: "-C github.com/anchore..." must still control github.com/anchore/bubbly.
+		{name: "bare ellipsis subtree match", patterns: []string{"github.com/anchore..."}, module: "github.com/anchore/bubbly", want: true},
+		{name: "bare ellipsis matches root", patterns: []string{"github.com/anchore..."}, module: "github.com/anchore", want: true},
+		{name: "bare ellipsis crosses slash", patterns: []string{"github.com/anchore..."}, module: "github.com/anchore/syft/cmd", want: true},
+		{name: "bare ellipsis prefix non-match", patterns: []string{"github.com/anchore..."}, module: "github.com/other/repo", want: false},
 		{name: "glob single segment", patterns: []string{"golang.org/x/*"}, module: "golang.org/x/text", want: true},
 		{name: "glob does not cross slash", patterns: []string{"golang.org/x/*"}, module: "golang.org/x/text/encoding", want: false},
 		{name: "empty patterns", patterns: nil, module: "github.com/a/b", want: false},

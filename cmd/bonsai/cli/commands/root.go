@@ -85,14 +85,14 @@ func Root(app clio.Application) *cobra.Command {
 
 func runAnatomy(opts *anatomyConfig) error {
 	resolved, err := bonsai.Resolve(bonsai.Config{
-		Dir:         opts.Dir,
-		Target:      opts.Target,
-		Binary:      opts.Binary,
-		Controlled:  opts.Controlled,
-		Ignore:      opts.Ignore,
-		Unlock:      opts.Unlock,
-		Why:         opts.Why,
-		HideIgnored: opts.HideIgnored,
+		Dir:        opts.Dir,
+		Target:     opts.Target,
+		Binary:     opts.Binary,
+		Controlled: opts.Controlled,
+		Locked:     opts.Lock,
+		Unlock:     opts.Unlock,
+		Why:        opts.Why,
+		HideLocked: opts.HideLocked,
 	})
 	if err != nil {
 		return err

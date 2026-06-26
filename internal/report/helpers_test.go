@@ -67,17 +67,16 @@ func TestJoinModules(t *testing.T) {
 	tests := []struct {
 		name    string
 		modules []string
-		n       int
 		want    string
 	}{
-		{name: "empty", modules: nil, n: 3, want: ""},
-		{name: "under the limit", modules: []string{"a", "b"}, n: 3, want: "a, b"},
-		{name: "at the limit", modules: []string{"a", "b", "c"}, n: 3, want: "a, b, c"},
-		{name: "over the limit collapses the overflow", modules: []string{"a", "b", "c", "d", "e"}, n: 3, want: "a, b, c +2 more"},
+		{name: "empty", modules: nil, want: ""},
+		{name: "under the limit", modules: []string{"a", "b"}, want: "a, b"},
+		{name: "at the limit", modules: []string{"a", "b", "c"}, want: "a, b, c"},
+		{name: "over the limit collapses the overflow", modules: []string{"a", "b", "c", "d", "e"}, want: "a, b, c +2 more"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, joinModules(tt.modules, tt.n))
+			assert.Equal(t, tt.want, joinModules(tt.modules))
 		})
 	}
 }
@@ -123,7 +122,7 @@ func TestKindLabel(t *testing.T) {
 		m    bonsai.ModuleSize
 		want string
 	}{
-		{name: "locked wins over direct", m: bonsai.ModuleSize{Ignored: true, Direct: true}, want: "locked"},
+		{name: "locked wins over direct", m: bonsai.ModuleSize{Locked: true, Direct: true}, want: "locked"},
 		{name: "direct dependency", m: bonsai.ModuleSize{Direct: true}, want: "direct"},
 		{name: "indirect dependency", m: bonsai.ModuleSize{}, want: "indirect"},
 	}

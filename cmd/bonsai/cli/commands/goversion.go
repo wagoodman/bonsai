@@ -57,7 +57,7 @@ func runGoVersion(opts *goVersionConfig) error {
 		Target:     opts.Target,
 		Binary:     opts.Binary,
 		Controlled: opts.Controlled,
-		Ignore:     opts.Ignore,
+		Locked:     opts.Lock,
 		Unlock:     opts.Unlock,
 	})
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/sahilm/fuzzy"
 
 	"github.com/wagoodman/bonsai/internal/bonsai"
+	"github.com/wagoodman/bonsai/internal/humanize"
 )
 
 // key bindings and the "main" class label, recurring across the update/view switch arms.
@@ -73,16 +74,19 @@ const (
 
 const detailInfoLines = 8 // module info (size/own, prune-alone, coupling, go directive) + "pulls in" header
 
-// State is the per-target explorer state that persists across runs.
+// State is the per-target explorer state that persists across runs. It holds only the
+// ephemeral what-if selection (which candidates are checked for pruning); the durable lock/
+// class decisions live in .bonsai.yaml, the single source of truth, not here.
 type State struct {
 	Pruned []string
-	Inputs bonsai.ClassInputs
 }
 
-// Result is what the explorer returns on exit.
+// Result is what the explorer returns on exit. Inputs is the final lock/class state the caller
+// writes back to .bonsai.yaml; State is the selection cache to persist.
 type Result struct {
 	Confirmed bool
 	Pruned    []string
+	Inputs    bonsai.ClassInputs
 	State     State
 }
 
@@ -96,7 +100,7 @@ func Run(s *bonsai.Session, initial State, version string) (Result, error) {
 		return Result{}, err
 	}
 	final := res.(model)
-	out := Result{Confirmed: final.confirmed, State: State{Pruned: keys(final.pruned), Inputs: final.inputs}}
+	out := Result{Confirmed: final.confirmed, Inputs: final.inputs, State: State{Pruned: keys(final.pruned)}}
 	if final.confirmed {
 		out.Pruned = final.whatif.PrunedModules
 	}
@@ -152,7 +156,6 @@ func newModel(s *bonsai.Session, initial State) model {
 		s:        s,
 		binSize:  s.BinarySize(),
 		pruned:   map[string]bool{},
-		inputs:   initial.Inputs,
 		filter:   ti,
 		expanded: map[string]bool{},
 		termW:    100,
@@ -161,9 +164,8 @@ func newModel(s *bonsai.Session, initial State) model {
 	for _, p := range initial.Pruned {
 		m.pruned[p] = true
 	}
-	if len(initial.Inputs.Controlled)+len(initial.Inputs.Locked)+len(initial.Inputs.Unlock) > 0 {
-		s.Reclassify(initial.Inputs)
-	}
+	// the session is already classified from .bonsai.yaml + flags (see NewSession); the lock/
+	// class state is not restored from the per-target cache — config is the source of truth.
 	m.inputs = s.Inputs()
 	m.all = s.Modules()
 	m.rebuildVisible()
@@ -1123,18 +1125,8 @@ func pad(s string, w, h int) string {
 	return lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
 }
 
-func humize(b uint64) string {
-	const unit = 1000
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "kMGT"[exp])
-}
+// humize is a local shorthand for the shared byte formatter, keeping the dense view code readable.
+func humize(b uint64) string { return humanize.Bytes(b) }
 
 func truncate(s string, width int) string {
 	if width < 4 || len(s) <= width {

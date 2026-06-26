@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestSplitIgnore(t *testing.T) {
+func TestSplitLock(t *testing.T) {
 	candidates := map[string]bool{
 		"github.com/x/a": true,
 		"github.com/x/b": true,
@@ -36,7 +36,7 @@ func TestSplitIgnore(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			preselected, extras := splitIgnore(tt.current, candidates)
+			preselected, extras := splitLock(tt.current, candidates)
 
 			gotPre := make([]string, 0, len(preselected))
 			for k := range preselected {

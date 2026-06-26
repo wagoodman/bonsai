@@ -71,7 +71,7 @@ func NewSession(cfg Config) (*Session, error) {
 
 	s.Reclassify(ClassInputs{
 		Controlled: cfg.Controlled,
-		Locked:     append(append([]string(nil), cfg.Locked...), cfg.Ignore...),
+		Locked:     cfg.Locked,
 		Unlock:     cfg.Unlock,
 	})
 	return s, nil
@@ -304,10 +304,10 @@ func (s *Session) Detail(module string) Detail {
 // under the current selection. When it survives (Freed false), NeededBy names the still-present
 // modules that keep it — the answer to "I pruned this, why is X still here?".
 type DepStatus struct {
-	Module   string
-	Bytes    uint64
-	Freed    bool
-	NeededBy []string
+	Module   string   `json:"module"`
+	Bytes    uint64   `json:"bytes"`
+	Freed    bool     `json:"freed"`
+	NeededBy []string `json:"neededBy,omitempty"`
 }
 
 // DragOutStatus reports, for the modules that the given module pulls in, which actually leave

@@ -1,4 +1,4 @@
-package ignoretui
+package locktui
 
 import (
 	"testing"

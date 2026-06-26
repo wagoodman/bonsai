@@ -2,7 +2,7 @@ package bonsai
 
 import "sort"
 
-// ModuleRef is a dependency module of the analysis target, used to populate the ignore-list
+// ModuleRef is a dependency module of the analysis target, used to populate the lock-list
 // editor without running a full build.
 type ModuleRef struct {
 	Path   string `json:"path"`
@@ -10,7 +10,7 @@ type ModuleRef struct {
 }
 
 // Modules resolves the dependency modules of cfg's target via `go list` (no build), sorted
-// by path. The main module is excluded. This is the candidate universe for the ignore list.
+// by path. The main module is excluded. This is the candidate universe for the lock list.
 func Modules(cfg Config) ([]ModuleRef, error) {
 	dir := cfg.Dir
 	if dir == "" {

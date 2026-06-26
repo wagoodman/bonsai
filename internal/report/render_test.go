@@ -55,7 +55,7 @@ func TestWriteJSON(t *testing.T) {
 	out := b.String()
 	assert.Contains(t, out, "\n  ", "output should be indented")
 
-	// the document round-trips back to an equivalent report (HideIgnored is presentation-only,
+	// the document round-trips back to an equivalent report (HideLocked is presentation-only,
 	// tagged json:"-", so it never serializes — the sample leaves it false anyway).
 	var got bonsai.PruneReport
 	require.NoError(t, json.Unmarshal([]byte(out), &got))
@@ -75,8 +75,8 @@ func TestWriteSizeMarkdown(t *testing.T) {
 	assert.Contains(t, out, "## Sections (file-backed)", "section layout shown with sections=true")
 	assert.Contains(t, out, "| --- |", "markdown pipe-table separator")
 	assert.Contains(t, out, "github.com/example/dep", "module data present")
-	// the import-why trace renders under the module.
-	assert.Contains(t, out, "← github.com/core/keep (1st)")
+	// the import-why trace renders under the module as a nested bullet (markdown form of the tree).
+	assert.Contains(t, out, "github.com/core/keep (1st)")
 }
 
 func TestWritePruneMarkdown(t *testing.T) {
@@ -90,8 +90,9 @@ func TestWritePruneMarkdown(t *testing.T) {
 	// orphaned-dep label carries the std tag and co-prune note.
 	assert.Contains(t, out, "github.com/x/orphan (std)")
 	assert.Contains(t, out, "also prune github.com/y/co")
-	// blame renders.
-	assert.Contains(t, out, "Fair-blame (Shapley)")
+	// blame folds into the candidates table as a BLAME column rather than a separate section.
+	assert.Contains(t, out, "BLAME")
+	assert.NotContains(t, out, "Fair-blame (Shapley)")
 }
 
 func TestWritePruneTableWhyTrace(t *testing.T) {
@@ -99,10 +100,12 @@ func TestWritePruneTableWhyTrace(t *testing.T) {
 	require.NoError(t, WritePruneTable(&b, whyPrune(), 40, false))
 	out := b.String()
 
-	// the import-why path renders the "← imported by (class)" trace and the "+N more" collapse.
-	assert.Contains(t, out, "← github.com/core/keep (1st)")
-	// blame renders.
-	assert.Contains(t, out, "Fair-blame (Shapley)")
+	// the import-why path renders the importer tree with branch connectors and a dim class tag.
+	assert.Contains(t, out, "github.com/core/keep")
+	assert.Regexp(t, `[├└]─ github\.com/core/keep 1st`, out)
+	// blame folds into the candidates table as a BLAME column rather than a separate section.
+	assert.Contains(t, out, "BLAME")
+	assert.NotContains(t, out, "Fair-blame (Shapley)")
 }
 
 func TestWriteSizeTableWhyTrace(t *testing.T) {
@@ -110,8 +113,9 @@ func TestWriteSizeTableWhyTrace(t *testing.T) {
 	require.NoError(t, WriteSizeTable(&b, whySize(), 40, false, false))
 	out := b.String()
 
-	assert.Contains(t, out, "← github.com/core/keep (1st)")
-	assert.Contains(t, out, "← +1 more")
+	// the importer tree: a class-tagged branch for the 1st-class importer, plus the "+N more" leaf.
+	assert.Regexp(t, `[├└]─ github\.com/core/keep 1st`, out)
+	assert.Contains(t, out, "+1 more")
 }
 
 func TestWriteGoFloor(t *testing.T) {

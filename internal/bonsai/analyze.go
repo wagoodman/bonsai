@@ -29,17 +29,15 @@ type Config struct {
 	// exact paths, "path/..." subtrees, or globs.
 	Controlled []string
 	// Locked lists modules never proposed for pruning. Every controlled module is locked by
-	// default (you keep what you own); add load-bearing deps you will always carry. Ignore is
-	// a deprecated alias merged into Locked.
+	// default (you keep what you own); add load-bearing deps you will always carry.
 	Locked []string
-	Ignore []string
 	// Unlock re-opens specific locked modules (including controlled ones) as prune candidates,
 	// overriding the default lock on controlled modules.
 	Unlock []string
 
-	HideIgnored bool // omit locked modules from output entirely (default: show them de-emphasized)
-	Blame       bool // also compute Shapley fair-blame attribution (splits shared weight across targets)
-	Why         bool // include the import-why trees (the "← imported by" traces); off by default
+	HideLocked bool // omit locked modules from output entirely (default: show them de-emphasized)
+	Blame      bool // also compute Shapley fair-blame attribution (splits shared weight across targets)
+	Why        bool // include the import-why trees (the "← imported by" traces); off by default
 }
 
 // ModuleSize is the aggregated size and metadata for one module in the binary.
@@ -50,7 +48,7 @@ type ModuleSize struct {
 	Class     string       `json:"class"`               // "main", "1st", "2nd", or "3rd" relative to controlled code
 	GoVersion string       `json:"goVersion,omitempty"` // module's declared `go` directive (go.mod), if any
 	InBuild   bool         `json:"inBuild"`
-	Ignored   bool         `json:"ignored,omitempty"` // locked: on the never-prune list
+	Locked    bool         `json:"locked,omitempty"` // on the never-prune list
 	Prune     *PruneResult `json:"prune,omitempty"`
 	Coupling  *Coupling    `json:"coupling,omitempty"`
 	Why       *ImportNode  `json:"why,omitempty"` // who imports this, traced back to 1st-class code
@@ -134,27 +132,26 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 }
 
 // optsFrom derives the internal analysis options (classification inputs) from the public
-// Config. The deprecated Ignore list is merged into Locked.
+// Config.
 func optsFrom(cfg Config) analyzeOpts {
-	locked := append(append([]string(nil), cfg.Locked...), cfg.Ignore...)
 	return analyzeOpts{
-		controlled:  newPatternMatcher(cfg.Controlled),
-		locked:      newPatternMatcher(locked),
-		unlock:      newPatternMatcher(cfg.Unlock),
-		hideIgnored: cfg.HideIgnored,
-		blame:       cfg.Blame,
-		why:         cfg.Why,
+		controlled: newPatternMatcher(cfg.Controlled),
+		locked:     newPatternMatcher(cfg.Locked),
+		unlock:     newPatternMatcher(cfg.Unlock),
+		hideLocked: cfg.HideLocked,
+		blame:      cfg.Blame,
+		why:        cfg.Why,
 	}
 }
 
 // analyzeOpts carries the non-binary inputs that shape the joined analysis.
 type analyzeOpts struct {
-	controlled  patternMatcher
-	locked      patternMatcher
-	unlock      patternMatcher
-	hideIgnored bool
-	blame       bool
-	why         bool
+	controlled patternMatcher
+	locked     patternMatcher
+	unlock     patternMatcher
+	hideLocked bool
+	blame      bool
+	why        bool
 }
 
 // resolvePrebuilt is the fallback path: load a binary the user already built. We locate its

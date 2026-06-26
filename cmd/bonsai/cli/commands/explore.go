@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
 
+	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/configedit"
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/prunetui"
 	"github.com/wagoodman/bonsai/cmd/bonsai/internal/ui"
 	"github.com/wagoodman/bonsai/internal/bonsai"
@@ -38,17 +40,18 @@ func Explore(id clio.Identification) *cobra.Command {
 		Long: "explore opens a what-if TUI: every dependency candidate starts selected for removal — " +
 			"deselect the ones you need with space. The summary bar shows the projected binary size and how " +
 			"many modules actually get pruned; the right panes show what the highlighted module drags out " +
-			"(and what survives, held by others) and why it's in the build. Your selection and per-module " +
-			"class/lock choices are remembered per scanned module across runs. Press ? inside for the full " +
-			"legend — the 1st/2nd/3rd-class model, locked/unlocked, the panes, and the keys. Read-only — " +
-			"enter prints the chosen prune set.",
+			"(and what survives, held by others) and why it's in the build. Lock/class edits are saved to " +
+			".bonsai.yaml (the same list `bonsai config lock` writes, honored by every command); your what-if " +
+			"selection is remembered per scanned module across runs. Press ? inside for the full legend — the " +
+			"1st/2nd/3rd-class model, locked/unlocked, the panes, and the keys. The prune set isn't applied — " +
+			"enter saves your lock/class edits and prints what would be pruned.",
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(c *cobra.Command, args []string) error {
 			dir := "."
 			if len(args) == 1 {
 				dir = args[0]
 			}
-			return runExplore(bonsai.Config{
+			return runExplore(c, bonsai.Config{
 				Dir:        dir,
 				Target:     target,
 				Binary:     binary,
@@ -62,12 +65,35 @@ func Explore(id clio.Identification) *cobra.Command {
 	flags.StringVar(&target, "target", "", "entrypoint package to build and analyze")
 	flags.StringVarP(&binary, "binary", "b", "", "explore a prebuilt binary instead of building from source")
 	flags.StringArrayVarP(&controlled, "controlled", "C", nil, "1st-class module patterns whose imports are cuttable")
-	flags.StringArrayVarP(&locked, "ignore", "i", nil, "module patterns never offered for pruning (locked)")
+	flags.StringArrayVarP(&locked, "lock", "l", nil, "module patterns to lock (never offered for pruning)")
 	flags.StringArrayVar(&unlock, "unlock", nil, "locked modules to re-open as prune candidates")
 	return cmd
 }
 
-func runExplore(cfg bonsai.Config, version string) error {
+func runExplore(cmd *cobra.Command, cfg bonsai.Config, version string) error {
+	// explore bypasses clio, so .bonsai.yaml isn't auto-loaded; fold in the analysis lock/
+	// controlled/unlock lists (the single source of truth, written by `bonsai config lock` and
+	// explore itself) unioned with any flags. baseline is the merged starting state we diff
+	// against on exit to decide whether to write the user's lock/class edits back.
+	path := resolveConfigPath(cmd)
+	if lock, controlled, unlock, err := configedit.ReadBuild(path); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", path, err)
+	} else {
+		cfg.Locked = append(cfg.Locked, lock...)
+		cfg.Controlled = append(cfg.Controlled, controlled...)
+		cfg.Unlock = append(cfg.Unlock, unlock...)
+	}
+	// normalize the merged flag+config lists so the session, the TUI's toggle lists, and the
+	// writeback diff all share one clean, stable set.
+	cfg.Controlled = sortedUnique(cfg.Controlled)
+	cfg.Locked = sortedUnique(cfg.Locked)
+	cfg.Unlock = sortedUnique(cfg.Unlock)
+	baseline := bonsai.ClassInputs{
+		Controlled: cfg.Controlled,
+		Locked:     cfg.Locked,
+		Unlock:     cfg.Unlock,
+	}
+
 	var session *bonsai.Session
 	// run the build/analysis under the same ✔ task-progress UI the root command shows; it tears
 	// down before the full-screen TUI below takes stdin.
@@ -80,23 +106,27 @@ func runExplore(cfg bonsai.Config, version string) error {
 		return err
 	}
 
-	// remembered selection/classification for this exact scan target (not shared across targets).
+	// remembered what-if selection for this exact scan target (not shared across targets); lock/
+	// class state comes from config, not from this cache.
 	key := session.MainModule()
 	initial := loadExploreState(key)
-	if isEmptyInputs(initial.Inputs) {
-		initial.Inputs = session.Inputs() // first run: seed from flags
-	}
 
 	res, err := prunetui.Run(session, initial, version)
 	if err != nil {
 		return err
 	}
-	saveExploreState(key, res.State) // persist whatever the user ended on
+	saveExploreState(key, res.State) // persist the selection the user ended on
 
 	if !res.Confirmed {
 		fmt.Fprintln(os.Stderr, "cancelled; nothing applied")
 		return nil
 	}
+
+	// persist any lock/class edits made in the TUI back to the config (the source of truth),
+	// but only when they actually changed and we have a file to write — esc/cancel never reaches
+	// here, so this is a deliberate confirm.
+	persistInputs(path, baseline, res.Inputs)
+
 	if len(res.Pruned) == 0 {
 		fmt.Fprintln(os.Stderr, "no modules selected for pruning")
 		return nil
@@ -109,8 +139,64 @@ func runExplore(cfg bonsai.Config, version string) error {
 	return nil
 }
 
-func isEmptyInputs(in bonsai.ClassInputs) bool {
-	return len(in.Controlled) == 0 && len(in.Locked) == 0 && len(in.Unlock) == 0
+// persistInputs writes the explorer's final lock/class state back to the config file when it
+// differs from the merged starting state. The lists are normalized so the on-disk diff stays
+// minimal and matches what `bonsai config lock` writes.
+func persistInputs(path string, baseline, final bonsai.ClassInputs) {
+	final = bonsai.ClassInputs{
+		Controlled: sortedUnique(final.Controlled),
+		Locked:     sortedUnique(final.Locked),
+		Unlock:     sortedUnique(final.Unlock),
+	}
+	if path == "" || sameInputs(baseline, final) {
+		return
+	}
+	if err := configedit.WriteBuild(path, final.Locked, final.Controlled, final.Unlock); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save lock changes to %s: %v\n", path, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "saved lock/class changes to %s\n", path)
+}
+
+// sameInputs reports whether two normalized (sorted, de-duplicated) ClassInputs are equal.
+func sameInputs(a, b bonsai.ClassInputs) bool {
+	return equalSlice(a.Controlled, b.Controlled) &&
+		equalSlice(a.Locked, b.Locked) &&
+		equalSlice(a.Unlock, b.Unlock)
+}
+
+func equalSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// sortedUnique returns the input sorted with duplicates and empties removed (nil for empty), so
+// merged flag+config lists produce a clean, stable set for classification and config writeback.
+func sortedUnique(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }
 
 // explore state is a tiny JSON store keyed by scanned module path, so re-running on the same

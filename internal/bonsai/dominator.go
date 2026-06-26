@@ -292,3 +292,35 @@ func dominators(n, entry int, succ [][]int) []int { //nolint:funlen,gocognit // 
 	}
 	return idom
 }
+
+// entryWeight is one package of a prune target that controlled code imports directly, paired
+// with the dominator-retained bytes hanging beneath it.
+type entryWeight struct {
+	pkg      string // the dependency package import path imported by first-party code
+	retained uint64 // exclusive bytes dominated by this entry package (its slice of the cut)
+}
+
+// entryWeights partitions a prune target's exclusive savings across the packages of it that
+// first-party code imports directly — the children of its gateway in the dominator tree. Each
+// entry's retained size is the weight reachable only through that entry package, so a caller
+// can see which imported package accounts for how much of the freeable weight (the scope of a
+// partial rewrite). Returns nil when nothing controlled reaches the target in the linked graph.
+func (m *domModel) entryWeights(target string) []entryWeight {
+	gw, ok := m.gateway[target]
+	if !ok {
+		return nil
+	}
+	out := make([]entryWeight, 0, len(m.children[gw]))
+	for _, c := range m.children[gw] {
+		if ip := m.pkgOf[c]; ip != "" { // gateway children are always real packages; guard defensively
+			out = append(out, entryWeight{pkg: ip, retained: m.retained[c]})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].retained != out[j].retained {
+			return out[i].retained > out[j].retained
+		}
+		return out[i].pkg < out[j].pkg
+	})
+	return out
+}

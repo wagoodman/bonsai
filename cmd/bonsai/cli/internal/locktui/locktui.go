@@ -1,6 +1,6 @@
-// Package ignoretui is an interactive fuzzy multi-select for editing bonsai's ignore list.
+// Package locktui is an interactive fuzzy multi-select for editing bonsai's lock list.
 // Type to filter, space to toggle, enter to save, esc to cancel.
-package ignoretui
+package locktui
 
 import (
 	"fmt"
@@ -188,7 +188,7 @@ func (m *model) recompute() {
 
 func (m model) View() string {
 	var b strings.Builder
-	fmt.Fprintln(&b, styTitle.Render("Select modules to ignore")+styDim.Render("  (never suggested for pruning)"))
+	fmt.Fprintln(&b, styTitle.Render("Select modules to lock")+styDim.Render("  (never suggested for pruning)"))
 	fmt.Fprintln(&b, m.filter.View())
 	fmt.Fprintln(&b)
 

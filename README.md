@@ -77,6 +77,37 @@ It's read-only: nothing is changed on disk, and your selection is remembered per
 target between runs. **Press `?` for the full legend** — what the `M`/`1`/`2`/`3`/`L`
 classes mean, the glyphs, the panes, and the keys.
 
+## Let an agent drive it
+
+The TUI is for you; the MCP server is for an AI agent working *in* your codebase. It exposes
+bonsai as a yardstick so the agent finds high-value cuts and edits with intent instead of
+searching in the dark — for binary size *and* go-version headroom alike:
+
+```sh
+bonsai mcp        # a Model Context Protocol server over stdio
+```
+
+Five intent-named tools, each just the JSON of a focused analysis:
+
+| Tool | The agent's question |
+|---|---|
+| `bonsai_size_targets` | "Where are the biggest size wins, ranked, and in what order?" |
+| `bonsai_go_floor` | "How low can my `go` directive go, and which deps pin it?" |
+| `bonsai_locate_cuts` | "I'm cutting module X — exactly which files/lines do I edit, and what happens?" |
+| `bonsai_anatomy` | "What's the binary's size shape now?" |
+| `bonsai_measure` | "Did my edit shrink it / lower the floor?" (cheap re-check) |
+
+`bonsai_locate_cuts` is the linchpin: it returns the concrete first-party import sites
+(`file:line`) to edit, the per-entry-package retained bytes (so a *partial* rewrite is scoped to
+what's actually worth it), what other modules leave vs survive, and whether the cut lowers your
+go-version floor. Builds are cached and re-run automatically when the source changes, so the
+agent's edit→measure loop just works.
+
+Point an MCP client at it (e.g. a `bonsai mcp` stdio server entry in your agent's config) and
+ask it to "make this binary smaller by replacing or rewriting high-value dependencies" or "lower
+our minimum Go version" — bonsai supplies the where and the yardstick; the agent supplies the
+edits.
+
 ## The one knob worth knowing
 
 By default bonsai assumes the only code you can edit is your main module — so the only things

@@ -49,7 +49,7 @@ type SizeReport struct {
 	Stripped      bool          `json:"stripped"`
 	Sections      []SectionInfo `json:"sections"`
 	Modules       []ModuleSize  `json:"modules"` // anatomy view: Prune/Coupling left nil
-	HideIgnored   bool          `json:"-"`       // presentation: drop locked modules instead of dimming
+	HideLocked    bool          `json:"-"`       // presentation: drop locked modules instead of dimming
 }
 
 // PruneReport is the prune subject: which dependencies, if removed, free the most bytes, with
@@ -60,7 +60,7 @@ type PruneReport struct {
 	Modules       []ModuleSize    `json:"modules"` // prune candidates carry Prune + Coupling
 	Plan          []PrunePlanStep `json:"prunePlan,omitempty"`
 	Blame         []ModuleBlame   `json:"blame,omitempty"`
-	HideIgnored   bool            `json:"-"`
+	HideLocked    bool            `json:"-"`
 }
 
 // Size attributes the binary's bytes by content and by owning module. It runs classification
@@ -83,7 +83,7 @@ func (r *Resolved) Size() SizeReport {
 		GeneratedSize: attr.generated,
 		Stripped:      bin.Stripped,
 		Sections:      bin.Sections,
-		HideIgnored:   r.opts.hideIgnored,
+		HideLocked:    r.opts.hideLocked,
 	}
 
 	cls := classify(g, r.opts.controlled, r.opts.locked, r.opts.unlock)
@@ -99,7 +99,7 @@ func (r *Resolved) Size() SizeReport {
 			Class:     cls.classOf(mod).String(),
 			GoVersion: g.goVersionOf(mod),
 			InBuild:   true,
-			Ignored:   cls.isLocked(mod),
+			Locked:    cls.isLocked(mod),
 		}
 		if importers != nil && !owned(cls.classOf(mod)) {
 			ms.Why = importWhy(mod, importers, cls)
@@ -136,7 +136,7 @@ func (r *Resolved) Prune() PruneReport {
 	rep := PruneReport{
 		AccountedSize: bin.SectionsSize,
 		MainModule:    g.mainModule,
-		HideIgnored:   r.opts.hideIgnored,
+		HideLocked:    r.opts.hideLocked,
 	}
 	for mod, sz := range bySize {
 		ms := ModuleSize{
@@ -146,7 +146,7 @@ func (r *Resolved) Prune() PruneReport {
 			Class:     cls.classOf(mod).String(),
 			GoVersion: g.goVersionOf(mod),
 			InBuild:   true,
-			Ignored:   cls.isLocked(mod),
+			Locked:    cls.isLocked(mod),
 		}
 		if mod != g.mainModule {
 			ms.Coupling = coup[mod]

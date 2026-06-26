@@ -23,7 +23,7 @@ func sampleSize() *bonsai.SizeReport {
 		Sections:      []bonsai.SectionInfo{{Name: ".text", Size: 600}},
 		Modules: []bonsai.ModuleSize{
 			{Module: "github.com/example/dep", Size: 400, Direct: true, Class: "2nd"},
-			{Module: "github.com/core/keep", Size: 300, Direct: true, Class: "1st", Ignored: true},
+			{Module: "github.com/core/keep", Size: 300, Direct: true, Class: "1st", Locked: true},
 		},
 	}
 }
@@ -37,7 +37,7 @@ func samplePrune() *bonsai.PruneReport {
 			{Module: "github.com/example/dep", Size: 400, Direct: true, Class: "2nd",
 				Prune: &bonsai.PruneResult{FreedBytes: 320, FreedModules: []string{"x"}, PotentialBytes: 400, SharedBytes: 80,
 					SharedWith: []bonsai.SharedHolder{{Module: "github.com/shared/lib", Bytes: 80, AlsoVia: []string{"github.com/example/other"}}}}},
-			{Module: "github.com/core/keep", Size: 300, Direct: true, Class: "1st", Ignored: true},
+			{Module: "github.com/core/keep", Size: 300, Direct: true, Class: "1st", Locked: true},
 		},
 		Plan: []bonsai.PrunePlanStep{
 			{Module: "github.com/example/dep", Marginal: 320, Cumulative: 320, OwnBytes: 320, Importers: 1},
@@ -78,14 +78,14 @@ func TestWriteSizeSectionsGated(t *testing.T) {
 	assert.Contains(t, on.String(), "Sections (file-backed)", "section layout shown with --sections")
 }
 
-func TestWriteSizeHideIgnored(t *testing.T) {
+func TestWriteSizeHideLocked(t *testing.T) {
 	rep := sampleSize()
-	rep.HideIgnored = true
+	rep.HideLocked = true
 	var b strings.Builder
 	require.NoError(t, WriteSizeTable(&b, rep, 40, false, false))
-	assert.NotContains(t, b.String(), "github.com/core/keep", "ignored module should be hidden")
+	assert.NotContains(t, b.String(), "github.com/core/keep", "locked module should be hidden")
 
-	rep.HideIgnored = false
+	rep.HideLocked = false
 	var b2 strings.Builder
 	require.NoError(t, WriteSizeTable(&b2, rep, 40, false, false))
 	assert.Contains(t, b2.String(), "github.com/core/keep", "locked module should be shown when not hidden")

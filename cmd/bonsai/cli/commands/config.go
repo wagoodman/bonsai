@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/configedit"
-	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/ignoretui"
+	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/locktui"
 	"github.com/wagoodman/bonsai/internal"
 	"github.com/wagoodman/bonsai/internal/bonsai"
 )
@@ -24,17 +24,17 @@ func Config() *cobra.Command {
 			return c.Help()
 		},
 	}
-	cmd.AddCommand(configIgnore())
+	cmd.AddCommand(configLock())
 	return cmd
 }
 
-func configIgnore() *cobra.Command {
+func configLock() *cobra.Command {
 	var target string
 	cmd := &cobra.Command{
-		Use:   "ignore [DIR]",
-		Short: "interactively edit the ignore list (modules never suggested for pruning)",
-		Long: "ignore opens a fuzzy multi-select of the target module's dependencies. Type to filter, " +
-			"space to toggle, enter to save, esc to cancel. The selection is written to the ignore list in " +
+		Use:   "lock [DIR]",
+		Short: "interactively edit the lock list (modules never suggested for pruning)",
+		Long: "lock opens a fuzzy multi-select of the target module's dependencies. Type to filter, " +
+			"space to toggle, enter to save, esc to cancel. The selection is written to the lock list in " +
 			"the config file, preserving the rest of the file and its comments.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
@@ -42,7 +42,7 @@ func configIgnore() *cobra.Command {
 			if len(args) == 1 {
 				dir = args[0]
 			}
-			return runConfigIgnore(c, dir, target)
+			return runConfigLock(c, dir, target)
 		},
 	}
 	cmd.Flags().StringVar(&target, "target", "",
@@ -50,10 +50,10 @@ func configIgnore() *cobra.Command {
 	return cmd
 }
 
-func runConfigIgnore(cmd *cobra.Command, dir, target string) error {
+func runConfigLock(cmd *cobra.Command, dir, target string) error {
 	path := resolveConfigPath(cmd)
 
-	current, err := configedit.ReadIgnore(path)
+	current, err := configedit.ReadLock(path)
 	if err != nil {
 		return err
 	}
@@ -67,21 +67,21 @@ func runConfigIgnore(cmd *cobra.Command, dir, target string) error {
 		return fmt.Errorf("no dependency modules found in %s", dir)
 	}
 
-	items := make([]ignoretui.Item, len(mods))
+	items := make([]locktui.Item, len(mods))
 	for i, m := range mods {
-		items[i] = ignoretui.Item{Module: m.Path, Direct: m.Direct}
+		items[i] = locktui.Item{Module: m.Path, Direct: m.Direct}
 	}
 
-	// pre-select modules already covered by the current ignore list; carry forward any
+	// pre-select modules already covered by the current lock list; carry forward any
 	// entries that aren't concrete dependency modules (globs, patterns, stale modules) so
 	// the editor never silently drops them.
 	candidates := map[string]bool{}
 	for _, it := range items {
 		candidates[it.Module] = true
 	}
-	preselected, extras := splitIgnore(current, candidates)
+	preselected, extras := splitLock(current, candidates)
 
-	chosen, ok, err := ignoretui.Run(items, preselected)
+	chosen, ok, err := locktui.Run(items, preselected)
 	if err != nil {
 		return err
 	}
@@ -94,17 +94,17 @@ func runConfigIgnore(cmd *cobra.Command, dir, target string) error {
 	final = append(final, extras...)
 	final = append(final, chosen...)
 	sort.Strings(final)
-	if err := configedit.WriteIgnore(path, final); err != nil {
+	if err := configedit.WriteLock(path, final); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "wrote %d ignore entr%s to %s\n", len(final), plural(len(final)), path)
+	fmt.Fprintf(os.Stderr, "wrote %d lock entr%s to %s\n", len(final), plural(len(final)), path)
 	return nil
 }
 
-// splitIgnore divides the current ignore entries into modules to pre-check (those that are
+// splitLock divides the current lock entries into modules to pre-check (those that are
 // concrete dependency modules) and extras to preserve verbatim (globs, "path/..." patterns,
 // or modules no longer in the graph).
-func splitIgnore(current []string, candidates map[string]bool) (preselected map[string]bool, extras []string) {
+func splitLock(current []string, candidates map[string]bool) (preselected map[string]bool, extras []string) {
 	preselected = map[string]bool{}
 	for _, e := range current {
 		if candidates[e] {

@@ -15,6 +15,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/wagoodman/bonsai/internal/bonsai"
+	"github.com/wagoodman/bonsai/internal/humanize"
 )
 
 // colModule is the recurring "module" column header shared across the report's tables.
@@ -72,6 +73,18 @@ func WriteGoFloorMarkdown(w io.Writer, f bonsai.GoFloor) error {
 	return (&report{w: w, md: true}).writeGoFloor(f)
 }
 
+// WriteInspectTable renders the single-module drill-down: entry-package weights, import sites,
+// drag-out, and the go-version floor delta.
+func WriteInspectTable(w io.Writer, rep *bonsai.InspectReport, color bool) error {
+	setColor(color)
+	return (&report{w: w, pal: palette{on: color}}).writeInspect(rep)
+}
+
+// WriteInspectMarkdown renders the single-module drill-down with markdown headings.
+func WriteInspectMarkdown(w io.Writer, rep *bonsai.InspectReport) error {
+	return (&report{w: w, md: true}).writeInspect(rep)
+}
+
 // palette gates ANSI styling: when off, every helper returns its input unchanged so the
 // same rendering code produces plain text for pipes, markdown, and NO_COLOR.
 type palette struct{ on bool }
@@ -80,8 +93,9 @@ var (
 	styTitle  = lipgloss.NewStyle().Bold(true)
 	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan
 	styDim    = lipgloss.NewStyle().Faint(true)
-	styGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
-	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
+	styGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))   // green
+	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))   // yellow
+	styGold   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class/main (yours), matches the explorer
 	styStrong = lipgloss.NewStyle().Bold(true)
 )
 
@@ -97,6 +111,7 @@ func (p palette) head(s string) string   { return p.render(styHead, s) }
 func (p palette) dim(s string) string    { return p.render(styDim, s) }
 func (p palette) good(s string) string   { return p.render(styGood, s) }
 func (p palette) warn(s string) string   { return p.render(styWarn, s) }
+func (p palette) gold(s string) string   { return p.render(styGold, s) }
 func (p palette) strong(s string) string { return p.render(styStrong, s) }
 
 // report carries the rendering mode and writer through the section helpers.
@@ -124,7 +139,6 @@ func (r *report) writeSize(rep *bonsai.SizeReport) error {
 func (r *report) writePrune(rep *bonsai.PruneReport) error {
 	r.pruneCandidates(rep)
 	r.prunePlan(rep)
-	r.blame(rep)
 	return nil
 }
 
@@ -132,6 +146,113 @@ func (r *report) writePrune(rep *bonsai.PruneReport) error {
 func (r *report) writeGoFloor(f bonsai.GoFloor) error {
 	r.goFloor(f)
 	return nil
+}
+
+// writeInspect renders the single-module drill-down: the headline (size, exclusive/potential,
+// go-floor delta), the entry-package weights (rewrite scope), the import sites (edit locations),
+// the drag-out (what leaves vs survives), and the why trace.
+func (r *report) writeInspect(rep *bonsai.InspectReport) error {
+	r.inspectSummary(rep)
+	r.inspectEntryPackages(rep)
+	r.inspectSites(rep)
+	r.inspectDragOut(rep)
+	if rep.Why != nil {
+		r.heading("Why it's in the build", "the \"← imported by\" trace back to your 1st-class code")
+		r.renderWhy(rep.Why, "  ")
+		fmt.Fprintln(r.w)
+	}
+	return nil
+}
+
+func (r *report) inspectSummary(rep *bonsai.InspectReport) {
+	kind := kindLabel(bonsai.ModuleSize{Module: rep.Module, Direct: true, Locked: rep.Locked})
+	r.heading(fmt.Sprintf("inspect %s", rep.Module),
+		fmt.Sprintf("class %s · %s", rep.Class, kind))
+
+	if !rep.Target {
+		r.floorNote(r.pal.warn("not a prune candidate (locked or 1st-class) — shown for context only"))
+	}
+	fmt.Fprintf(r.w, "  freed by pruning this alone   %s\n", r.pal.good(humize(rep.FreedBytes)))
+	if rep.PotentialBytes > rep.FreedBytes {
+		fmt.Fprintf(r.w, "  potential (whole subtree)     %s   %s\n",
+			humize(rep.PotentialBytes),
+			r.pal.dim("if co-holders are pruned too"))
+	}
+	r.inspectFloorLine(rep.FloorDelta)
+	fmt.Fprintln(r.w)
+}
+
+func (r *report) inspectFloorLine(d bonsai.FloorDelta) {
+	switch {
+	case d.Before == "":
+		return // no dependency imposes a floor
+	case d.MovesFloor:
+		fmt.Fprintf(r.w, "  go-version floor              %s\n",
+			r.pal.good(fmt.Sprintf("go %s → %s  (pruning this lowers it)", d.Before, d.After)))
+	default:
+		fmt.Fprintf(r.w, "  go-version floor              %s\n",
+			r.pal.dim(fmt.Sprintf("go %s  (pruning this doesn't lower it)", d.Before)))
+	}
+}
+
+// inspectEntryPackages renders the per-entry-package retained weight — the rewrite-scope map:
+// which directly-imported packages of the module account for how many of the freeable bytes.
+func (r *report) inspectEntryPackages(rep *bonsai.InspectReport) {
+	if len(rep.EntryPackages) == 0 {
+		return
+	}
+	r.heading("Entry packages (rewrite scope)",
+		"each directly-imported package and the bytes that leave if you stop importing it")
+	rows := [][]string{}
+	for i, e := range rep.EntryPackages {
+		if i >= 40 {
+			break
+		}
+		rows = append(rows, []string{humize(e.RetainedBytes), e.ImportPath, joinModules(e.ImportedByPackages)})
+	}
+	r.table([]string{"RETAINED", "IMPORT PATH", "IMPORTED BY (1st-class)"}, rows, nil)
+}
+
+// inspectSites renders the concrete import statements to edit to sever the dependency.
+func (r *report) inspectSites(rep *bonsai.InspectReport) {
+	if len(rep.Sites) == 0 {
+		return
+	}
+	r.heading("Import sites (edit here to cut)",
+		"the first-party import statements that reference this module")
+	rows := [][]string{}
+	for i, s := range rep.Sites {
+		if i >= 40 {
+			rows = append(rows, []string{r.pal.dim(fmt.Sprintf("+%d more", len(rep.Sites)-40)), "", ""})
+			break
+		}
+		rows = append(rows, []string{fmt.Sprintf("%s:%d", s.File, s.Line), s.FromPackage, s.ImportPath})
+	}
+	r.table([]string{"FILE:LINE", "FROM PACKAGE", "IMPORTS"}, rows, nil)
+}
+
+// inspectDragOut renders what leaves vs survives if the module is pruned, naming who holds the
+// survivors — the consequence map.
+func (r *report) inspectDragOut(rep *bonsai.InspectReport) {
+	if len(rep.DragOut) == 0 {
+		return
+	}
+	r.heading("Drag-out (what pruning this frees)",
+		"freed = leaves the build with this module; survives = held by another importer (named)")
+	rows := [][]string{}
+	for i, d := range rep.DragOut {
+		if i >= 40 {
+			break
+		}
+		status := r.pal.good("freed")
+		held := ""
+		if !d.Freed {
+			status = r.pal.warn("survives")
+			held = joinModules(d.NeededBy)
+		}
+		rows = append(rows, []string{humize(d.Bytes), status, d.Module, held})
+	}
+	r.table([]string{"BYTES", "STATUS", colModule, "HELD BY"}, rows, nil)
 }
 
 // footer points readers to the sibling subjects, since anatomy deliberately carries no prune or
@@ -263,8 +384,7 @@ func (r *report) sectionsBlock(an *bonsai.SizeReport) {
 }
 
 // largestModules ranks third-party modules by size. With import-why trees present (--why) it
-// renders each entry with its "← imported by" trace beneath; otherwise it keeps the compact
-// table.
+// renders each entry with its importer tree beneath; otherwise it keeps the compact table.
 func (r *report) largestModules(an *bonsai.SizeReport) {
 	withWhy := false
 	for _, m := range an.Modules {
@@ -279,7 +399,7 @@ func (r *report) largestModules(an *bonsai.SizeReport) {
 	}
 
 	r.heading("Largest modules by size",
-		"class is relative to code you control; ← traces who imports it back to your 1st-class code")
+		"class is relative to code you control; the tree under each module traces who imports it, back to your 1st-class code")
 	if !r.md {
 		fmt.Fprintf(r.w, "  %s\n", r.pal.head(fmt.Sprintf("%9s  %5s  %-5s  %-8s  %s", "SIZE", "%BIN", "CLASS", "KIND", colModule)))
 	}
@@ -288,7 +408,7 @@ func (r *report) largestModules(an *bonsai.SizeReport) {
 		if m.Module == an.MainModule {
 			continue
 		}
-		if m.Ignored && an.HideIgnored {
+		if m.Locked && an.HideLocked {
 			continue
 		}
 		r.moduleRow(m, an.AccountedSize)
@@ -315,11 +435,11 @@ func (r *report) largestModulesTable(an *bonsai.SizeReport) {
 		if m.Module == an.MainModule {
 			continue
 		}
-		if m.Ignored && an.HideIgnored {
+		if m.Locked && an.HideLocked {
 			continue
 		}
 		rows = append(rows, []string{humize(m.Size), pctStr(m.Size, an.AccountedSize), m.Class, kindLabel(m), m.Module})
-		dim = append(dim, m.Ignored)
+		dim = append(dim, m.Locked)
 		if shown++; shown >= r.top {
 			break
 		}
@@ -336,7 +456,7 @@ func (r *report) moduleRow(m bonsai.ModuleSize, denom uint64) {
 		return
 	}
 	row := fmt.Sprintf("%9s  %5s  %-5s  %-8s  %s", humize(m.Size), pctStr(m.Size, denom), m.Class, kindLabel(m), m.Module)
-	if m.Ignored {
+	if m.Locked {
 		row = r.pal.dim(row)
 	}
 	fmt.Fprintf(r.w, "  %s\n", row)
@@ -351,8 +471,22 @@ func (r *report) pruneCandidates(an *bonsai.PruneReport) {
 	}
 	sort.Slice(prunable, func(i, j int) bool { return prunable[i].Prune.FreedBytes > prunable[j].Prune.FreedBytes })
 
-	r.heading("Prune candidates",
-		"EXCL = freed by pruning this alone; POT = freeable weight in its subtree; GET% = EXCL/POT (the rest is shared with other deps)")
+	// when --blame is set, fold each target's fair-share of shared weight into a BLAME column
+	// rather than a separate section, so EXCL (freed alone) and BLAME (fair cost) read across one row.
+	blame := map[string]uint64{}
+	for _, b := range an.Blame {
+		blame[b.Module] = b.Blame
+	}
+	desc := "EXCL = freed by pruning this alone; POT = freeable weight in its subtree; GET% = EXCL/POT (the rest is shared with other deps)"
+	if len(blame) > 0 {
+		how := "sampled"
+		if an.Blame[0].Exact {
+			how = "exact"
+		}
+		desc += fmt.Sprintf("; BLAME = fair share of shared weight (Shapley, %s)", how)
+	}
+
+	r.heading("Prune candidates", desc)
 	if len(prunable) > 0 {
 		r.pruneHeadline(prunable[0])
 	}
@@ -363,12 +497,20 @@ func (r *report) pruneCandidates(an *bonsai.PruneReport) {
 		}
 		p := m.Prune
 		c := coup(m)
-		rows = append(rows, []string{
-			r.pal.good(humize(p.FreedBytes)), humize(p.PotentialBytes), getPct(p), itoa(len(p.FreedModules)),
-			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Class, m.Module,
-		})
+		row := []string{r.pal.good(humize(p.FreedBytes)), humize(p.PotentialBytes)}
+		if len(blame) > 0 {
+			row = append(row, humize(blame[m.Module]))
+		}
+		row = append(row, getPct(p), itoa(len(p.FreedModules)),
+			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Class, m.Module)
+		rows = append(rows, row)
 	}
-	r.table([]string{"EXCL", "POT", "GET%", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "CLASS", colModule}, rows, nil)
+	headers := []string{"EXCL", "POT"}
+	if len(blame) > 0 {
+		headers = append(headers, "BLAME")
+	}
+	headers = append(headers, "GET%", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "CLASS", colModule)
+	r.table(headers, rows, nil)
 }
 
 // pruneHeadline renders the one-line "biggest realistic win" sentence for the top prune
@@ -382,7 +524,7 @@ func (r *report) pruneHeadline(m bonsai.ModuleSize) {
 	if p.SharedBytes > 0 {
 		extra := ""
 		if len(p.SharedWith) > 0 && len(p.SharedWith[0].AlsoVia) > 0 {
-			extra = " — co-prune " + joinModules(p.SharedWith[0].AlsoVia, 3) + " to free it"
+			extra = " — co-prune " + joinModules(p.SharedWith[0].AlsoVia) + " to free it"
 		}
 		line += fmt.Sprintf(" (%s shared%s)", humize(p.SharedBytes), extra)
 	}
@@ -465,27 +607,71 @@ func (r *report) planDeps(freed []bonsai.FreedModule, prefix string) {
 	}
 }
 
-// renderWhy prints a module's import-why tree as indented "← imported by (class)" branches,
-// tracing back to the 1st-class code that pulled it in. prefix is the indent for this level.
+// renderWhy prints a module's import-why tree beneath its already-labeled row, matching the
+// explorer's tree style: ├─/└─ branch connectors, the module name colored by class (gold for
+// 1st-class/main, the code you control), and a dim class tag. node is the module itself (the
+// labeled row above), so its importers — node.Via — are the top-level branches. No purple
+// selection highlight: every module here is a candidate, not one picked out from the rest.
 func (r *report) renderWhy(node *bonsai.ImportNode, prefix string) {
 	if node == nil {
 		return
 	}
-	for _, child := range node.Via {
-		if r.md {
-			fmt.Fprintf(r.w, "%s- ← %s (%s)\n", prefix, child.Module, child.Class)
-		} else {
-			fmt.Fprintf(r.w, "%s%s\n", prefix, r.pal.dim(fmt.Sprintf("← %s (%s)", child.Module, child.Class)))
-		}
-		r.renderWhy(child, prefix+"  ")
+	r.renderWhyChildren(node, prefix)
+}
+
+// renderWhyChildren draws node's importers (and a collapsed "+N more" leaf) as a connector
+// forest, recursing toward the 1st-class code that pulled the dep in.
+func (r *report) renderWhyChildren(node *bonsai.ImportNode, prefix string) {
+	total := len(node.Via)
+	if node.More > 0 {
+		total++
+	}
+	for i, child := range node.Via {
+		last := i == total-1
+		r.whyLine(prefix, child.Module, child.Class, last)
+		r.renderWhyChildren(child, prefix+r.whyCont(last))
 	}
 	if node.More > 0 {
-		marker := fmt.Sprintf("← +%d more", node.More)
-		if r.md {
-			fmt.Fprintf(r.w, "%s- %s\n", prefix, marker)
-		} else {
-			fmt.Fprintf(r.w, "%s%s\n", prefix, r.pal.dim(marker))
+		r.whyLine(prefix, fmt.Sprintf("+%d more", node.More), "", true)
+	}
+}
+
+// whyLine renders one importer branch: a connector, the class-colored module name, and a dim
+// class tag. In markdown it falls back to a nested bullet (box-drawing reads poorly there).
+func (r *report) whyLine(prefix, mod, class string, last bool) {
+	if r.md {
+		tag := ""
+		if class != "" {
+			tag = fmt.Sprintf(" (%s)", class)
 		}
+		fmt.Fprintf(r.w, "%s- %s%s\n", prefix, mod, tag)
+		return
+	}
+	branch := "├─ "
+	if last {
+		branch = "└─ "
+	}
+	name := mod
+	if class == "1st" || class == "main" {
+		name = r.pal.gold(mod)
+	}
+	tag := ""
+	if class != "" {
+		tag = r.pal.dim(" " + class)
+	}
+	fmt.Fprintf(r.w, "%s%s%s%s\n", prefix, r.pal.dim(branch), name, tag)
+}
+
+// whyCont returns the continuation indent threaded to a branch's children: a vertical rule when
+// more siblings follow, blank when the branch was the last. Markdown nests by two spaces.
+func (r *report) whyCont(last bool) string {
+	switch {
+	case r.md:
+		return "  "
+	case last:
+		return "   "
+	default:
+		return "│  "
 	}
 }
 
@@ -499,7 +685,7 @@ func (r *report) depLabel(f bonsai.FreedModule) string {
 		label += " (std)"
 	}
 	if len(f.CoPrune) > 0 {
-		label += "  " + r.pal.warn(fmt.Sprintf("(also prune %s)", joinModules(f.CoPrune, 3)))
+		label += "  " + r.pal.warn(fmt.Sprintf("(also prune %s)", joinModules(f.CoPrune)))
 	}
 	return label
 }
@@ -517,29 +703,9 @@ func importerNote(importers int) string {
 	}
 }
 
-func (r *report) blame(an *bonsai.PruneReport) {
-	if len(an.Blame) == 0 {
-		return
-	}
-	how := "sampled"
-	if an.Blame[0].Exact {
-		how = "exact"
-	}
-	r.heading("Fair-blame (Shapley)",
-		fmt.Sprintf("each target's fair share of the total prunable weight, %s — shared deps are split across the targets that hold them", how))
-	rows := [][]string{}
-	for i, b := range an.Blame {
-		if i >= r.top {
-			break
-		}
-		rows = append(rows, []string{humize(b.Blame), b.Module})
-	}
-	r.table([]string{"BLAME", colModule}, rows, nil)
-}
-
 // table renders a titled table. In markdown mode it emits a pipe table; otherwise a
 // color-aware aligned table (lipgloss measures width ignoring ANSI, so styled cells stay
-// aligned). dim[i], when set, faints row i (used for ignored modules). goodCol, when >= 0,
+// aligned). dim[i], when set, faints row i (used for locked modules). goodCol, when >= 0,
 // is unused here but reserved for column-specific emphasis.
 func (r *report) table(headers []string, rows [][]string, dim []bool) {
 	if len(rows) == 0 {
@@ -593,18 +759,9 @@ func (r *report) markdownTable(headers []string, rows [][]string) {
 	fmt.Fprintln(r.w)
 }
 
-func humize(b uint64) string {
-	const unit = 1000
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "kMGT"[exp])
-}
+// humize is a local shorthand for the shared byte formatter, keeping the dense table-formatting
+// code below readable.
+func humize(b uint64) string { return humanize.Bytes(b) }
 
 func coup(m bonsai.ModuleSize) *bonsai.Coupling {
 	if m.Coupling != nil {
@@ -617,7 +774,7 @@ func coup(m bonsai.ModuleSize) *bonsai.Coupling {
 // over the direct/indirect distinction since that is what gates a prune suggestion.
 func kindLabel(m bonsai.ModuleSize) string {
 	switch {
-	case m.Ignored:
+	case m.Locked:
 		return "locked"
 	case m.Direct:
 		return "direct"
@@ -634,14 +791,17 @@ func getPct(p *bonsai.PruneResult) string {
 	return pctStr(p.FreedBytes, p.PotentialBytes)
 }
 
-// joinModules renders up to n full module paths, collapsing the overflow into "+k more".
-// Full paths (not last-segment short names) because these lists are actionable — a co-prune
-// of "v2" or "generic" is meaningless, github.com/aws/aws-sdk-go-v2 is not.
-func joinModules(modules []string, n int) string {
-	if len(modules) <= n {
+// maxJoinedModules caps how many full module paths joinModules renders inline.
+const maxJoinedModules = 3
+
+// joinModules renders up to maxJoinedModules full module paths, collapsing the overflow into
+// "+k more". Full paths (not last-segment short names) because these lists are actionable — a
+// co-prune of "v2" or "generic" is meaningless, github.com/aws/aws-sdk-go-v2 is not.
+func joinModules(modules []string) string {
+	if len(modules) <= maxJoinedModules {
 		return strings.Join(modules, ", ")
 	}
-	return strings.Join(modules[:n], ", ") + fmt.Sprintf(" +%d more", len(modules)-n)
+	return strings.Join(modules[:maxJoinedModules], ", ") + fmt.Sprintf(" +%d more", len(modules)-maxJoinedModules)
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
