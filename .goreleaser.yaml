@@ -74,3 +74,14 @@ archives:
     format: zip
     builds:
       - windows-build
+
+sboms:
+  - artifacts: archive
+    cmd: ../.tool/syft
+    documents:
+      - "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom"
+    args:
+      - "scan"
+      - "$artifact"
+      - "--output"
+      - "json=$document"

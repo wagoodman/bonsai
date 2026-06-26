@@ -96,11 +96,18 @@ issues:
 
 formatters:
   enable:
+    - gci
     - gofmt
-    - goimports
   exclusions:
     generated: lax
     paths:
       - third_party$
       - builtin$
       - examples$
+  settings:
+    gci:
+      # See https://golangci-lint.run/docs/formatters/configuration/#gci
+      sections:
+        - standard # Standard section: captures all standard packages.
+        - default # Default section: contains all imports that could not be matched to another section type.
+        - prefix(github.com/wagoodman)

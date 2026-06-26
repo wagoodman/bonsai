@@ -2,6 +2,11 @@ version: "3"
 vars:
   TOOL_DIR: .tool
   BINNY: "{{ .TOOL_DIR }}/binny"
+  GOLANGCI_LINT: "{{ .TOOL_DIR }}/golangci-lint"
+  BOUNCER: "{{ .TOOL_DIR }}/bouncer"
+  CHRONICLE: "{{ .TOOL_DIR }}/chronicle"
+  GLOW: "{{ .TOOL_DIR }}/glow"
+  GORELEASER: "{{ .TOOL_DIR }}/goreleaser"
 
   OWNER: wagoodman
   PROJECT: bonsai
@@ -40,16 +45,15 @@ tasks:
     cmds:
       - task: unit
 
-
   ## Bootstrap tasks #################################
 
   binny:
     internal: true
     # desc: Get the binny tool
     generates:
-      - "{{ .TOOL_DIR }}/binny"
+      - "{{ .BINNY }}"
     status:
-      - "test -f {{ .TOOL_DIR }}/binny"
+      - "test -f {{ .BINNY }}"
     cmd: "curl -sSfL https://get.anchore.io/binny | sh -s -- -b .tool"
     silent: true
 
@@ -93,15 +97,13 @@ tasks:
       - "{{ .TMP_DIR }}"
     cmd: "mkdir -p {{ .TMP_DIR }}"
 
-
   ## Static analysis tasks #################################
 
   format:
     desc: Auto-format all source code
     deps: [tools]
     cmds:
-      - gofmt -w -s .
-      - "{{ .TOOL_DIR }}/gosimports -local {{ .IMPORT_PREFIX }} -w ."
+      - "{{ .GOLANGCI_LINT }} fmt ."
       - go mod tidy
 
   lint-fix:
@@ -109,7 +111,7 @@ tasks:
     deps: [tools]
     cmds:
       - task: format
-      - "{{ .TOOL_DIR }}/golangci-lint run --tests=false --fix"
+      - "{{ .GOLANGCI_LINT }} run --tests=false --fix"
 
   lint:
     desc: Run gofmt + golangci lint checks
@@ -127,10 +129,7 @@ tasks:
       - cmd: 'test -z "{{ .BAD_FILE_NAMES }}" || (echo "files with bad names: [{{ .BAD_FILE_NAMES }}]"; exit 1)'
         silent: true
       # run linting
-      - "{{ .TOOL_DIR }}/golangci-lint run --tests=false"
-      # ensure there are no gosimports differences
-      - cmd: '[ -z "$({{ .TOOL_DIR }}/gosimports -local {{ .IMPORT_PREFIX }} -d .)" ] || (echo "gosimports needs to be fixed" && false)'
-        silent: true
+      - "{{ .GOLANGCI_LINT }} run --tests=false"
 
   check-go-mod-tidy:
     # desc: Ensure go.mod and go.sum are up to date
@@ -141,8 +140,7 @@ tasks:
     # desc: Ensure licenses are valid
     deps: [tools]
     cmds:
-      - "{{ .TOOL_DIR }}/bouncer check ./..."
-
+      - "{{ .BOUNCER }} check ./..."
 
   ## Testing tasks #################################
 
@@ -157,7 +155,6 @@ tasks:
       - cmd: ".github/scripts/coverage.py {{ .COVERAGE_THRESHOLD }} {{ .TMP_DIR }}/unit-coverage-details.txt"
         silent: true
 
-
   ## Build-related tasks #################################
 
   changelog:
@@ -167,8 +164,8 @@ tasks:
       - "{{ .CHANGELOG }}"
       - "{{ .NEXT_VERSION }}"
     cmds:
-      - "{{ .TOOL_DIR }}/chronicle -vvv -n --version-file {{ .NEXT_VERSION }} > {{ .CHANGELOG }}"
-      - "{{ .TOOL_DIR }}/glow {{ .CHANGELOG }}"
+      - "{{ .CHRONICLE }} -vvv -n --version-file {{ .NEXT_VERSION }} > {{ .CHANGELOG }}"
+      - "{{ .GLOW }} {{ .CHANGELOG }}"
 
   snapshot:
     desc: Create a snapshot release
@@ -179,8 +176,7 @@ tasks:
       - cmd: |
           cat .goreleaser.yaml > {{ .TMP_DIR }}/goreleaser.yaml
           echo "dist: {{ .SNAPSHOT_DIR }}" >> {{ .TMP_DIR }}/goreleaser.yaml
-      - cmd: "{{ .TOOL_DIR }}/goreleaser release --clean --skip=publish --skip=sign --snapshot --config {{ .TMP_DIR }}/goreleaser.yaml"
-
+      - cmd: "{{ .GORELEASER }} release --clean --skip=publish --skip=sign --snapshot --config {{ .TMP_DIR }}/goreleaser.yaml"
 
   ## Release tasks #################################
 
@@ -197,20 +193,19 @@ tasks:
     deps: [tools, tmpdir]
     cmds:
       - task: ci-check
-      - "{{ .TOOL_DIR }}/chronicle -vvv > {{ .CHANGELOG }}"
+      - "{{ .CHRONICLE }} -vvv > {{ .CHANGELOG }}"
       - cmd: "cat {{ .CHANGELOG }}"
         silent: true
       - cmd: |
           cat .goreleaser.yaml > {{ .TMP_DIR }}/goreleaser.yaml
           echo "dist: dist" >> {{ .TMP_DIR }}/goreleaser.yaml
-      - "{{ .TOOL_DIR }}/goreleaser release --clean --release-notes {{ .CHANGELOG }} --config {{ .TMP_DIR }}/goreleaser.yaml"
+      - "{{ .GORELEASER }} release --clean --release-notes {{ .CHANGELOG }} --config {{ .TMP_DIR }}/goreleaser.yaml"
 
   ci-check:
     # desc: "[CI only] Are you in CI?"
     cmds:
       - cmd: .github/scripts/ci-check.sh
         silent: true
-
 
   ## Cleanup tasks #################################
 

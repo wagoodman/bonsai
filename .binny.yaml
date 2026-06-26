@@ -3,14 +3,14 @@ cooldown: 7d
 tools:
   - name: binny
     version:
-      want: v0.11.3
+      want: v0.13.2
     method: github-release
     with:
       repo: anchore/binny
 
   - name: task
     version:
-      want: v3.48.0
+      want: v3.51.1
     method: github-release
     with:
       repo: go-task/task
@@ -26,17 +26,17 @@ tools:
 
   - name: goreleaser
     version:
-      want: v2.14.1
+      want: v2.16.0
     method: github-release
     with:
       repo: goreleaser/goreleaser
 
-  - name: gosimports
+  - name: syft
     version:
-      want: v0.3.8
+      want: v1.46.0
     method: github-release
     with:
-      repo: rinchsan/gosimports
+      repo: anchore/syft
 
   - name: bouncer
     version:
@@ -47,21 +47,21 @@ tools:
 
   - name: chronicle
     version:
-      want: v0.8.0
+      want: v0.13.1
     method: github-release
     with:
       repo: anchore/chronicle
 
   - name: glow
     version:
-      want: v2.1.1
+      want: v2.1.2
     method: github-release
     with:
       repo: charmbracelet/glow
 
   - name: gh
     version:
-      want: v2.87.3
+      want: v2.95.0
     method: github-release
     with:
       repo: cli/cli
