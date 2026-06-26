@@ -8,8 +8,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
+
+	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/tui"
 )
 
 // Item is one selectable dependency module.
@@ -17,15 +18,6 @@ type Item struct {
 	Module string
 	Direct bool
 }
-
-var (
-	styTitle  = lipgloss.NewStyle().Bold(true)
-	styHelp   = lipgloss.NewStyle().Faint(true)
-	styDirect = lipgloss.NewStyle().Foreground(lipgloss.Color("6")) // cyan
-	styDim    = lipgloss.NewStyle().Faint(true)
-	styCursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")) // magenta
-	styCheck  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))            // green
-)
 
 // Run launches the editor over items, with preselected modules already checked. It returns
 // the chosen module paths and whether the user confirmed (enter) rather than cancelled.
@@ -57,14 +49,13 @@ type model struct {
 	cursor  int   // index into matches
 	offset  int   // first visible match (scroll)
 	height  int   // visible list rows
+	width   int   // terminal width, for the full-row cursor bar
 
 	confirmed bool
 }
 
 func newModel(items []Item, preselected map[string]bool) model {
-	ti := textinput.New()
-	ti.Placeholder = "filter modules…"
-	ti.Prompt = "filter> "
+	ti := tui.NewFilter("filter modules…")
 	ti.Focus()
 
 	sel := map[string]bool{}
@@ -94,6 +85,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		// reserve rows for title, filter, blank line, and help.
 		m.height = max(3, msg.Height-5)
+		m.width = msg.Width
 		m.fixOffset()
 		return m, nil
 
@@ -134,6 +126,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prev := m.filter.Value()
 		m.filter, cmd = m.filter.Update(msg)
 		if m.filter.Value() != prev {
+			tui.StyleFilter(&m.filter)
 			m.cursor = 0
 			m.offset = 0
 			m.recompute()
@@ -150,7 +143,7 @@ func (m *model) move(delta int) {
 	if len(m.matches) == 0 {
 		return
 	}
-	m.cursor = clamp(m.cursor+delta, 0, len(m.matches)-1)
+	m.cursor = tui.Clamp(m.cursor+delta, 0, len(m.matches)-1)
 	m.fixOffset()
 }
 
@@ -188,34 +181,41 @@ func (m *model) recompute() {
 
 func (m model) View() string {
 	var b strings.Builder
-	fmt.Fprintln(&b, styTitle.Render("Select modules to lock")+styDim.Render("  (never suggested for pruning)"))
+	fmt.Fprintln(&b, tui.Title.Render("Select modules to lock")+tui.Dim.Render("  (never suggested for pruning)"))
 	fmt.Fprintln(&b, m.filter.View())
 	fmt.Fprintln(&b)
 
 	if len(m.matches) == 0 {
-		fmt.Fprintln(&b, styDim.Render("  no modules match"))
+		fmt.Fprintln(&b, tui.Dim.Render("  no modules match"))
 	}
 	end := min(m.offset+m.height, len(m.matches))
 	for i := m.offset; i < end; i++ {
 		it := m.items[m.matches[i]]
-		cursor := "  "
+		selected := m.selected[it.Module]
+		// the cursor row is a full-width purple bar with plain text (matches the prune explorer),
+		// not a ▸ arrow.
 		if i == m.cursor {
-			cursor = styCursor.Render("▸ ")
+			glyph := tui.GlyphOff
+			if selected {
+				glyph = tui.GlyphOn
+			}
+			plain := fmt.Sprintf("%s %s%s", glyph, it.Module, suffixPlain(it))
+			fmt.Fprintln(&b, tui.RowCursor.Render(tui.Fit(plain, max(m.width, 1))))
+			continue
 		}
-		check := "[ ]"
-		if m.selected[it.Module] {
-			check = styCheck.Render("[x]")
+		glyph := tui.GlyphOff
+		modName := tui.Dim.Render(it.Module) // de-emphasize unselected rows
+		if selected {
+			glyph = tui.Good.Render(tui.GlyphOn)
+			modName = it.Module
 		}
-		// de-emphasize rows that are neither highlighted nor selected.
-		modName := it.Module
-		if i != m.cursor && !m.selected[it.Module] {
-			modName = styDim.Render(modName)
-		}
-		fmt.Fprintf(&b, "%s%s %s\n", cursor, check, modName+directSuffix(it))
+		fmt.Fprintf(&b, "%s %s\n", glyph, modName+directSuffix(it))
 	}
 
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, styHelp.Render(fmt.Sprintf(
+	// no trailing newline: the chrome (title/filter/blanks/help) plus a full list fills the
+	// terminal exactly, and a trailing newline would tip it one line over, scrolling the title off.
+	fmt.Fprint(&b, tui.Help.Render(fmt.Sprintf(
 		"space toggle · ↑/↓ move · enter save · esc cancel — %d selected, %d shown",
 		len(m.selected), len(m.matches))))
 	return b.String()
@@ -223,17 +223,16 @@ func (m model) View() string {
 
 func directSuffix(it Item) string {
 	if it.Direct {
-		return styDirect.Render(" (direct)")
+		return tui.Cyan.Render(" (direct)")
 	}
-	return styDim.Render(" (indirect)")
+	return tui.Dim.Render(" (indirect)")
 }
 
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
+// suffixPlain is directSuffix without styling, for the cursor row (which carries its own bar
+// style and would otherwise embed conflicting color resets).
+func suffixPlain(it Item) string {
+	if it.Direct {
+		return " (direct)"
 	}
-	if v > hi {
-		return hi
-	}
-	return v
+	return " (indirect)"
 }
