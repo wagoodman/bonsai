@@ -2,9 +2,7 @@
 
 *Make smaller dependency trees for your Go projects.*
 
-`bonsai` shows how each dependency in your Go project affects your binary size and your minimum Go version, including the ones pulled in transitively that you never imported directly.
-
-`bonsai` builds your binary and finds the dependencies driving its size and your minimum Go version, then works out how much each one would actually save if you pruned it. Some of them you'll genuinely need, and that call stays yours; bonsai just gives you the numbers to make it with. There's also an MCP server, so an AI agent working in your codebase can use it to find and make cuts instead of guessing.
+`bonsai` builds your binary and finds the dependencies driving its size and your minimum Go version, including the ones pulled in transitively that you never imported directly, then works out how much each one would actually save if you pruned it. Some of them you'll genuinely need, and that call stays yours; bonsai just gives you the numbers to make it with. There's also an MCP server, so an AI agent working in your codebase can use it to find and make cuts instead of guessing.
 
 The thing it's built around: "this dep is 8 MB, so dropping it saves 8 MB" is almost never true. Most of that weight is shared with other dependencies that aren't going anywhere. What matters isn't how big a dependency is, it's how much *only it* is keeping alive. That's the same "retained size" a memory profiler shows you, applied to your dependency graph.
 
@@ -34,19 +32,17 @@ There are a handful of subcommands, each answering one question:
 
 **`--controlled` is the flag that makes bonsai useful, and if you don't set it you'll get shallow results.**
 
-By default bonsai assumes the only code you can edit is the module you're scanning, so the only refactors it considers are cutting your direct dependencies. *But "code you can edit" is usually bigger than one module*: your org's libraries, a fork you maintain, anything you can send a PR to. Every module you mark as controlled becomes another place bonsai is allowed to suggest cutting an import out of, which widens the pool of candidates deeper into the tree.
+By default bonsai assumes the only code you can edit is the module you're scanning, so the only refactors it considers are cutting your direct dependencies. *But "code you can edit" is usually bigger than one module*: your org's libraries, a fork you maintain, anything you can send a PR to. Mark one of those as controlled and bonsai can suggest cutting an import inside *that* library, a dependency of a dependency, below anything your `go.mod` mentions. That's usually where the real savings hide, and they're invisible until you tell bonsai which code is yours to change. So widen this as far as it honestly goes.
 
 ```sh
 bonsai prune . --controlled "github.com/yourorg/..."
 ```
 
-Your `go.mod` only lists your direct dependencies. Mark a library you maintain as controlled and bonsai can now suggest cutting an import inside *that* library, which is a dependency of a dependency, deeper in the tree than anything your `go.mod` mentions. That's where the real savings usually are, and they're invisible to bonsai until you tell it which code is yours to change. So widen this as far as it honestly goes.
-
 A few more flags, briefly:
 
 - `--lock <pattern>`: lock things you'll never drop so they stop showing up as suggestions.
 - `--unlock <module>`: the opposite, treating something you own as fair game to drop wholesale.
-- `--blame`: split each dependency's fair share of the shared weight, so the numbers add up to the real total instead of crediting shared deps to nobody (the Shapley value, from cooperative game theory).
+- `--blame`: split each dependency's fair share of the shared weight, so the numbers add up to the real total instead of crediting shared deps to nobody (the Shapley value).
 
 ### How bonsai sorts your dependencies
 
@@ -57,7 +53,7 @@ Every dependency lands in one of four buckets, and the bucket decides whether bo
 - **3rd-class**: a dependency reached only *through* other dependencies. You can't drop it directly; it leaves only when whatever pulls it in leaves. (Most of your graph.)
 - **locked**: off-limits, never suggested. Everything 1st-class is locked by default; `--lock` locks more, `--unlock` explicitly re-opens modules for consideration.
 
-Widening `--controlled` promotes a whole layer of 3rd-class deps into 2nd-class candidates, which is why the real savings tend to hide a level or two down.
+Widening `--controlled` promotes 3rd-class deps into 2nd-class candidates.
 
 ## Four ways to look at it
 
@@ -98,7 +94,7 @@ So the go-sdk module is a quarter its own code, and the rest is the cluster it p
 bonsai explore .
 ```
 
-Everything in your binary starts checked (included in your build). Uncheck a dependency and the header shows the new projected size right away; the side panes show what that module drags out, what survives because something else still needs it, and why it's in the build at all. The `M`/`1`/`2`/`3`/`L` column is the four classes from above, and you can re-classify modules on the fly and watch the candidate set move. The prune set isn't applied (enter just prints it), but lock/class edits you make are saved to `.bonsai.yaml` (the same list `bonsai config lock` writes, honored by every command), and your what-if selection is remembered per target between runs. Press `?` for the full legend.
+Everything starts checked (in your build). Uncheck a dependency and the header reprojects the size right away, while the side panes show what it drags out, what survives because something else still needs it, and why it's in the build. The `M`/`1`/`2`/`3`/`L` column is the four classes above; reclassify on the fly and watch the candidate set move. Nothing is applied (enter just prints the prune set), but lock and class edits save to `.bonsai.yaml`, the same file every command reads. Press `?` for the legend.
 
 ### MCP
 
@@ -106,7 +102,7 @@ Everything in your binary starts checked (included in your build). Uncheck a dep
 bonsai mcp        # a Model Context Protocol server over stdio
 ```
 
-Point an MCP client at it and an agent working in your codebase can use bonsai as a yardstick, finding cuts and editing with intent instead of guessing. Five tools, each the JSON of one focused analysis:
+Why a server instead of just shelling out to the CLI? Because the CLI rebuilds your target on every run, and an agent doesn't ask once: it orients, locates cuts, edits, re-measures, repeats. The server builds once and keeps it warm, rebuilding only when you actually change the source, so that loop stays cheap. Point an MCP client at it and the agent uses bonsai as a yardstick, editing with intent instead of guessing. Five tools, each one focused analysis:
 
 | Tool | The agent's question |
 |---|---|
@@ -116,4 +112,4 @@ Point an MCP client at it and an agent working in your codebase can use bonsai a
 | `bonsai_anatomy` | What's the binary's size shape now? |
 | `bonsai_measure` | Did my edit shrink it / lower the floor? (a cheap re-check) |
 
-`bonsai_locate_cuts` returns the concrete first-party import sites (`file:line`) to edit and the per-entry-package bytes behind them, so a partial rewrite is scoped to what's actually worth it. Builds are cached and re-run when the source changes, so the agent's edit-then-measure loop just works. Then ask it to "make this binary smaller by replacing high-value dependencies" or "lower our minimum Go version."
+`bonsai_locate_cuts` returns the concrete first-party import sites (`file:line`) to edit and the per-entry-package bytes behind them, so a partial rewrite is scoped to what's actually worth it. Then ask the agent to "make this binary smaller by replacing high-value dependencies" or "lower our minimum Go version."
