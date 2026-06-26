@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/anchore/clio"
 	"github.com/spf13/cobra"
 
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/configedit"
@@ -13,22 +14,16 @@ import (
 	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
-// Config is the `bonsai config` command group. Its subcommands edit the bonsai config file.
-// These are plain cobra commands (not wired through clio's command setup) so they can drive
-// their own interactive terminal UI without the progress event-loop UI contending for stdin.
-func Config() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "view and edit bonsai configuration",
-		RunE: func(c *cobra.Command, _ []string) error {
-			return c.Help()
-		},
-	}
-	cmd.AddCommand(configLock())
-	return cmd
+// Config is the `bonsai config` command (from clio): the base command prints the resolved
+// application configuration and `config locations` lists the config search paths.
+func Config(app clio.Application) *cobra.Command {
+	return clio.ConfigCommand(app, nil)
 }
 
-func configLock() *cobra.Command {
+// Lock is the `bonsai lock` command: an interactive editor for the config's lock list. It is a
+// plain cobra command (its RunE isn't wrapped with the progress event-loop UI), so it can drive
+// its own terminal UI without contending for stdin.
+func Lock() *cobra.Command {
 	var target string
 	cmd := &cobra.Command{
 		Use:   "lock [DIR]",
