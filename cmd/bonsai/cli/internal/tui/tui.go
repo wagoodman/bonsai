@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/wagoodman/bonsai/internal/style"
 )
 
 // circle glyphs for selectable rows: filled = on (in binary / locked), hollow = off.
@@ -20,10 +22,10 @@ const (
 const FilterGlyph = "⌕"
 
 var (
-	// the filter prompt is dim while empty and turns an accent color once it holds text, so an
+	// the filter prompt is dim while empty and turns the Active accent once it holds text, so an
 	// in-use filter reads as "active" at a glance. The prompt width is constant either way.
-	filterIdle   = lipgloss.NewStyle().Faint(true)
-	filterActive = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true) // cyan accent
+	filterIdle   = style.Subtle
+	filterActive = style.ActiveStyle.Bold(true)
 )
 
 // NewFilter builds the shared fuzzy-filter input: a search-glyph prompt with the given
@@ -51,16 +53,18 @@ func StyleFilter(ti *textinput.Model) {
 	ti.TextStyle = filterActive
 }
 
+// the shared TUI styles are a thin, conveniently-named interface over the central semantic
+// palette (internal/style), so the prune explorer and lock editor stay in lockstep with the
+// plain reports without re-declaring any color literals.
 var (
-	Title = lipgloss.NewStyle().Bold(true)
-	Dim   = lipgloss.NewStyle().Faint(true)
-	Help  = lipgloss.NewStyle().Faint(true)
-	Good  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
-	Cyan  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	// RowCursor is the highlighted row: an explicit purple bar with bright text, rather than
-	// Reverse(true) (whose fg/bg swap over an unset background renders inconsistently across
-	// terminals).
-	RowCursor = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("135"))
+	Title  = style.Title
+	Dim    = style.Subtle
+	Help   = style.Subtle
+	Win    = style.WinStyle    // positive: in-selection glyph, savings
+	Active = style.ActiveStyle // interactive affordance / focused state
+	// RowCursor is the highlighted row: an explicit purple bar with bright text (see style.Cursor),
+	// rather than Reverse(true) whose fg/bg swap renders inconsistently across terminals.
+	RowCursor = style.Cursor
 )
 
 // Clamp constrains v to [lo, hi].

@@ -12,12 +12,12 @@ import (
 	"github.com/anchore/clio"
 	"github.com/anchore/go-logger"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	handler "github.com/wagoodman/bonsai/cmd/bonsai/cli/ui"
 	"github.com/wagoodman/bonsai/internal/bus"
 	"github.com/wagoodman/bonsai/internal/event"
 	"github.com/wagoodman/bonsai/internal/log"
+	"github.com/wagoodman/bonsai/internal/style"
 	"github.com/wagoodman/go-partybus"
 )
 
@@ -261,8 +261,7 @@ func postUIEvents(quiet bool, events ...partybus.Event) {
 			if err != nil {
 				log.WithFields("error", err).Warnf("failed to gather notification for %q", source)
 			} else {
-				// 13 = high intensity magenta (ANSI 16 bit code)
-				_, _ = fmt.Fprintln(os.Stderr, lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Render(notification))
+				_, _ = fmt.Fprintln(os.Stderr, style.NoticeStyle.Render(notification))
 			}
 		}
 	}

@@ -203,10 +203,12 @@ func (m model) View() string {
 			fmt.Fprintln(&b, tui.RowCursor.Render(tui.Fit(plain, max(m.width, 1))))
 			continue
 		}
-		glyph := tui.GlyphOff
-		modName := tui.Dim.Render(it.Module) // de-emphasize unselected rows
+		// selection rides the greyscale axis: unchecked rows recede (dim glyph + name), checked
+		// rows step forward (normal weight). No hue — green is reserved for freed weight elsewhere.
+		glyph := tui.Dim.Render(tui.GlyphOff)
+		modName := tui.Dim.Render(it.Module)
 		if selected {
-			glyph = tui.Good.Render(tui.GlyphOn)
+			glyph = tui.GlyphOn
 			modName = it.Module
 		}
 		fmt.Fprintf(&b, "%s %s\n", glyph, modName+directSuffix(it))
@@ -223,7 +225,7 @@ func (m model) View() string {
 
 func directSuffix(it Item) string {
 	if it.Direct {
-		return tui.Cyan.Render(" (direct)")
+		return " (direct)" // normal weight: direct deps lead, indirect recede
 	}
 	return tui.Dim.Render(" (indirect)")
 }

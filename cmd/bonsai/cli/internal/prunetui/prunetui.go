@@ -19,6 +19,7 @@ import (
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/tui"
 	"github.com/wagoodman/bonsai/internal/bonsai"
 	"github.com/wagoodman/bonsai/internal/humanize"
+	"github.com/wagoodman/bonsai/internal/style"
 )
 
 // key bindings and the "main" class label, recurring across the update/view switch arms.
@@ -32,24 +33,25 @@ const (
 )
 
 var (
-	// shared with the lock editor (see internal/tui) so the two TUIs read as one tool.
-	styHelp = tui.Help
-	styDim  = tui.Dim
-	styGood = tui.Good
-	styCyan = tui.Cyan
-	styRow  = tui.RowCursor
+	// every style maps to a semantic token in internal/style (shared with the lock editor and the
+	// plain reports), so the same meaning renders the same everywhere — no local color literals.
+	styHelp   = tui.Help
+	styDim    = tui.Dim
+	styGood   = style.WinStyle    // freed / saved weight
+	styActive = style.ActiveStyle // interactive affordance: keybinding letters
+	styRow    = tui.RowCursor
 
-	styBar    = lipgloss.NewStyle().Bold(true)
-	styGold   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // 1st-class (yours)
-	styWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))   // yellow: go-floor pinners
-	styHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styPurple = lipgloss.NewStyle().Foreground(lipgloss.Color("135")) // selection / the module matched elsewhere
+	styBar    = style.Strong       // top size-summary headline
+	styGold   = style.YoursStyle   // 1st-class / main (the code you control)
+	styWarn   = style.CautionStyle // go-floor pinners, survivors, warnings
+	styHead   = style.Heading      // section headers (bold, no hue)
+	styPurple = style.Picked       // the module singled out from the rest (matched in the why-tree)
 
-	// the panes split with a grey vertical line and a grey-background header bar (not a ─ rule):
-	// both are grey so the line meets the bar at a clean junction instead of the characters crossing.
-	styDivide  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))                                             // vertical rule
-	styHeadBar = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Background(lipgloss.Color("237"))  // header bar
-	styFocus   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("240")) // focused pane: lighter bar, bright title
+	// the panes split with a grey vertical line meeting a grey header bar (not a ─ rule) at a clean
+	// junction. Focus is shown by hue (Active), not a brighter bar: cyan title = the focused pane.
+	styDivide  = lipgloss.NewStyle().Foreground(style.Rule)                                     // vertical rule
+	styHeadBar = lipgloss.NewStyle().Bold(true).Background(style.BarBg)                         // unfocused: neutral grey chip
+	styFocus   = lipgloss.NewStyle().Bold(true).Foreground(style.Active).Background(style.Rule) // focused: cyan title
 )
 
 const (
@@ -657,9 +659,11 @@ func (m model) viewList(width int) string {
 			lines = append(lines, styRow.Render(fit(plain, width)))
 			continue
 		}
+		// the glyph is neutral state, not a hue: present (●) reads at normal weight against the
+		// dim pruned (○) / not-a-candidate (·) rows. Green stays reserved for freed weight.
 		boxR := styDim.Render(box)
 		if box == glyphIn {
-			boxR = styGood.Render(box)
+			boxR = box
 		}
 		name := classStyle(mod.Class, mod.Controlled, mod.Locked, truncate(mod.Module, width-23))
 		if mod.Target && m.pruned[mod.Module] {
@@ -712,10 +716,11 @@ func (m model) detailBody(width int) []string {
 		case st.Freed:
 			line = styDim.Render(fmt.Sprintf("%s %8s  %s", glyphOut, humize(st.Bytes), label))
 		case len(st.NeededBy) == 0:
-			line = fmt.Sprintf("%s %8s  %s%s", styGood.Render(glyphIn), humize(st.Bytes), label, styDim.Render("  (only via this)"))
+			line = fmt.Sprintf("%s %8s  %s%s", glyphIn, humize(st.Bytes), label, styDim.Render("  (only via this)"))
 		default:
+			// survives: held by other importers, so pruning this won't free it — a caution.
 			note := fmt.Sprintf("  (needed by %d)", len(st.NeededBy))
-			line = fmt.Sprintf("%s %8s  %s%s", styGood.Render(glyphIn), humize(st.Bytes), label, styDim.Render(note))
+			line = fmt.Sprintf("%s %8s  %s%s", glyphIn, humize(st.Bytes), label, styWarn.Render(note))
 		}
 		if m.focus == focusDetail && i == m.detailCursor {
 			line = styRow.Render(fit(plainDep(st, label), width))
@@ -922,7 +927,7 @@ func (m model) helpCard(maxH int) string {
 	content := strings.Join(append([]string{title, ""}, lines[off:end]...), "\n")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")).
+		BorderForeground(style.Active).
 		Padding(0, 2).
 		Render(content)
 }
@@ -940,14 +945,14 @@ func helpLines() []string {
 		styGold.Render("M") + "  main module — your entrypoint; always yours to edit",
 		styGold.Render("1") + "  1st-class — code you control (" + dim("main + --controlled") + ")",
 		dim("    bonsai cuts imports OUT of these; they're never pruned"),
-		styCyan.Render("2") + "  2nd-class — a dep your controlled code imports directly",
+		"2  2nd-class — a dep your controlled code imports directly",
 		"    " + styGood.Render("← these are the prune candidates"),
 		dim("3") + "  3rd-class — reached only via other deps, not your code",
 		dim("    can't cut directly; it leaves only when its importer does"),
 		dim("L") + "  locked — never offered for pruning (1st-class by default)",
 		"",
 		head("Glyphs"),
-		styGood.Render(glyphIn) + " in binary    " + glyphOut + " pruned    " + dim(glyphNone) + " not a candidate",
+		glyphIn + " in binary    " + dim(glyphOut) + " pruned    " + dim(glyphNone) + " not a candidate",
 		styWarn.Render(glyphFloor) + " pins the go floor — the lowest go version your modules",
 		dim("  can require; prune its pinners to lower it"),
 		"",
@@ -955,16 +960,16 @@ func helpLines() []string {
 		"size / own   total reachable bytes vs this module's own code",
 		"prune-alone  bytes freed if you prune ONLY this — its retained",
 		dim("             size, not its gross; shared weight stays behind"),
-		"pulls in     what leaves (" + glyphOut + ") vs survives (" + styGood.Render(glyphIn) + ", held by others)",
+		"pulls in     what leaves (" + dim(glyphOut) + ") vs survives (" + styWarn.Render(glyphIn) + ", held by others)",
 		"",
 		head("Why it's here   (go mod why)"),
 		"the import path from your code down to this module — shows",
 		dim("which import to drop to make it actually leave"),
 		"",
 		head("Reclassify live"),
-		styCyan.Render("c") + "  controlled — mark a module 1st-class (cut its imports)",
-		styCyan.Render("l") + "  locked     — protect from / expose to pruning",
-		styCyan.Render("u") + "  unlock     — drop one of your own modules wholesale",
+		styActive.Render("c") + "  controlled — mark a module 1st-class (cut its imports)",
+		styActive.Render("l") + "  locked     — protect from / expose to pruning",
+		styActive.Render("u") + "  unlock     — drop one of your own modules wholesale",
 		"",
 		head("Keys"),
 		dim("↑/↓") + " move   " + dim("space") + " prune   " + dim("/") + " filter   " + dim("a") + " all/candidates",
@@ -974,7 +979,9 @@ func helpLines() []string {
 
 // rendering helpers
 
-// classTag is a colored one-letter class indicator: M(ain), 1st, 2nd candidate, L(ocked), 3rd.
+// classTag is a one-letter class indicator. Only the code you control is hued: M(ain) and 1st
+// are gold; 2nd candidates are neutral; 3rd and L(ocked) recede (dim). The letter carries the
+// rest of the distinction, so the column reads at a glance without a fistful of colors.
 func classTag(mod bonsai.Module) string {
 	switch {
 	case mod.Class == classMain:
@@ -984,7 +991,7 @@ func classTag(mod bonsai.Module) string {
 	case mod.Locked:
 		return styDim.Render("L")
 	case mod.Target:
-		return styCyan.Render("2")
+		return "2" // 2nd-class candidate: neutral; only "yours" (M/1) earns a hue
 	default:
 		return styDim.Render("3")
 	}
