@@ -13,6 +13,7 @@ CLAUDE.md
 .tool-versions
 .mise.toml
 .conductor
+.bonsai.yaml
 
 # release locations
 /snapshot
