@@ -440,5 +440,40 @@ func packageOfSymbol(name string) string {
 	if strings.ContainsAny(pkg, ":") || strings.HasPrefix(pkg, "_") {
 		return pkgGenerated
 	}
-	return pkg
+	return unescapeSymbolPath(pkg)
+}
+
+// unescapeSymbolPath reverses the linker's objabi.PathToPrefix encoding: bytes in a package
+// path are escaped as %xx, notably '.' in the final path element (e.g. gopkg.in/yaml.v3
+// appears in symbol names as gopkg.in/yaml%2ev3). Decode them so the path matches the import
+// paths in the build graph; without this such modules look absent from the build.
+func unescapeSymbolPath(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if hi, lo := unhexDigit(s[i+1]), unhexDigit(s[i+2]); hi >= 0 && lo >= 0 {
+				b.WriteByte(byte(hi<<4 | lo))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func unhexDigit(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c-'a') + 10
+	case 'A' <= c && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return -1
 }

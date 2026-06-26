@@ -26,6 +26,11 @@ func TestPackageOfSymbol(t *testing.T) {
 		{name: "no dot is generated", sym: "runtimeonly", want: "<generated>"},
 		{name: "type metadata is generated", sym: "type:.eq.runtime._type", want: "<generated>"},
 		{name: "go-prefixed is generated", sym: "go:itab.foo", want: "<generated>"},
+		// the linker escapes '.' in the final path element as %2e (objabi.PathToPrefix), so
+		// gopkg.in/yaml.v3 shows up as gopkg.in/yaml%2ev3 in symbols; it must decode back to
+		// the real import path or the module looks absent from the build (regression).
+		{name: "escaped dot in final element", sym: "gopkg.in/yaml%2ev3.Unmarshal", want: "gopkg.in/yaml.v3"},
+		{name: "escaped dot on method", sym: "gopkg.in/yaml%2ev3.(*decoder).unmarshal", want: "gopkg.in/yaml.v3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
