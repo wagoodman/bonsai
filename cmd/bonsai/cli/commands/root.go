@@ -62,8 +62,9 @@ func Root(app clio.Application, id clio.Identification) *cobra.Command {
 		Long: "bonsai helps you make smaller dependency trees for your Go projects. Run it with no subcommand to " +
 			"open the interactive prune explorer: every dependency candidate starts selected for removal, and you " +
 			"deselect what you need to see the projected binary size. Use `bonsai anatomy` for a static size " +
-			"breakdown, `bonsai prune` to rank which dependencies to cut, and `bonsai go-version` for the lowest go " +
-			"directive you can declare. Pass --binary to analyze a prebuilt binary instead.",
+			"breakdown, `bonsai prune` to rank which dependencies to cut, `bonsai go-version` for the lowest go " +
+			"directive you can declare, and `bonsai diff <ref>` for the size and go-floor delta your branch makes. " +
+			"Pass --binary to analyze a prebuilt binary instead.",
 		Args: cobra.MaximumNArgs(1),
 	}
 	app.SetupRootCommand(cmd)
