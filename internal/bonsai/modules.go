@@ -12,20 +12,12 @@ type ModuleRef struct {
 // Modules resolves the dependency modules of cfg's target via `go list` (no build), sorted
 // by path. The main module is excluded. This is the candidate universe for the lock list.
 func Modules(cfg Config) ([]ModuleRef, error) {
-	dir := cfg.Dir
-	if dir == "" {
-		dir = "."
-	}
-	target := cfg.Target
-	if target == "" {
-		t, err := detectTarget(dir)
-		if err != nil {
-			return nil, err
-		}
-		target = t
+	dir, target, err := dirTarget(cfg)
+	if err != nil {
+		return nil, err
 	}
 
-	g, err := loadBuildGraph(dir, target, "", "")
+	g, err := loadBuildGraph(dir, target, cfg.Platform, cfg.Build)
 	if err != nil {
 		return nil, err
 	}

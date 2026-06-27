@@ -58,14 +58,7 @@ func Inspect(app clio.Application) *cobra.Command {
 }
 
 func runInspect(opts *inspectConfig, module string) error {
-	resolved, err := bonsai.Resolve(bonsai.Config{
-		Dir:        opts.Dir,
-		Target:     opts.Target,
-		Binary:     opts.Binary,
-		Controlled: opts.Controlled,
-		Locked:     opts.Lock,
-		Unlock:     opts.Unlock,
-	})
+	resolved, err := bonsai.Resolve(opts.Config())
 	if err != nil {
 		return err
 	}

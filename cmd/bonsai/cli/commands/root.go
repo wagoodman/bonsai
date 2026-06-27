@@ -109,16 +109,10 @@ func Anatomy(app clio.Application) *cobra.Command {
 }
 
 func runAnatomy(opts *anatomyConfig) error {
-	resolved, err := bonsai.Resolve(bonsai.Config{
-		Dir:        opts.Dir,
-		Target:     opts.Target,
-		Binary:     opts.Binary,
-		Controlled: opts.Controlled,
-		Locked:     opts.Lock,
-		Unlock:     opts.Unlock,
-		Why:        opts.Why,
-		HideLocked: opts.HideLocked,
-	})
+	cfg := opts.Config()
+	cfg.Why = opts.Why
+	cfg.HideLocked = opts.HideLocked
+	resolved, err := bonsai.Resolve(cfg)
 	if err != nil {
 		return err
 	}

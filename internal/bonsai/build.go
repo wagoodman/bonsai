@@ -18,8 +18,10 @@ type buildArtifacts struct {
 // the linker's `-dumpdep` symbol-reachability graph alongside it. Building ourselves means
 // we always have matching source + binary, never need to locate a checkout or rebuild a
 // stripped artifact, and get the exact post-dead-code-elimination reference graph the
-// linker actually used. Returns the artifacts and a cleanup func that removes both temps.
-func buildForAnalysis(dir, target string) (buildArtifacts, func(), error) {
+// linker actually used. p selects the build cell (GOOS/GOARCH/tags); b carries persisted build
+// defaults (env, extra tags, freeform args). Zero values are the host toolchain. Returns the
+// artifacts and a cleanup func that removes both temps.
+func buildForAnalysis(dir, target string, p Platform, b BuildSettings) (buildArtifacts, func(), error) {
 	binF, err := os.CreateTemp("", "bonsai-bin-*")
 	if err != nil {
 		return buildArtifacts{}, func() {}, err
@@ -38,8 +40,20 @@ func buildForAnalysis(dir, target string) (buildArtifacts, func(), error) {
 	// -dumpdep writes the symbol dependency graph to stderr during the link step; capture
 	// it to a file. On a build failure the link step never runs, so stderr holds only the
 	// compiler error, which we surface for diagnostics.
-	cmd := exec.Command("go", "build", "-o", binF.Name(), "-ldflags=-dumpdep", target) //nolint:gosec // invoking the go toolchain on a user-supplied target is this tool's whole purpose
+	// user args first, then bonsai's own -o/-ldflags=-dumpdep/-tags so they can't be clobbered:
+	// the analysis build must stay unstripped and emit the dumpdep graph regardless of what the
+	// user persisted. as a result -tags/-o/-ldflags inside b.Args are overridden — put build tags
+	// in the tags/build.tags field, not args.
+	args := []string{"build"}
+	args = append(args, splitArgs(b.Args)...)
+	args = append(args, "-o", binF.Name(), "-ldflags=-dumpdep")
+	if tags := tagsArg(effectiveTags(b, p)); tags != "" {
+		args = append(args, tags)
+	}
+	args = append(args, target)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
+	cmd.Env = platformEnv(p, b)
 	cmd.Stderr = ddF
 	runErr := cmd.Run()
 	ddF.Close()

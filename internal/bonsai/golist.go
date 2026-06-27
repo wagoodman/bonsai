@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -56,18 +55,20 @@ func (g *buildGraph) isControlled(m string) bool {
 	return g.controlled[m]
 }
 
-// loadBuildGraph runs `go list -deps -json <target>` in dir and assembles the graph.
-// goos/goarch, when set, constrain the build to match the analyzed binary's platform.
-func loadBuildGraph(dir, target, goos, goarch string) (*buildGraph, error) {
-	cmd := exec.Command("go", "list", "-deps", "-json", target)
+// loadBuildGraph runs `go list -deps -json <target>` in dir and assembles the graph. p and b,
+// when non-zero, constrain the list to a specific build cell (GOOS/GOARCH/tags) and env so the
+// graph describes the same build the matrix (or a prebuilt binary's platform) cares about. The
+// freeform build args (b.Args) are deliberately not passed: `go list` rejects build-only flags
+// like -ldflags, and they don't change which packages are imported.
+func loadBuildGraph(dir, target string, p Platform, b BuildSettings) (*buildGraph, error) {
+	args := []string{"list", "-deps", "-json"}
+	if tags := tagsArg(effectiveTags(b, p)); tags != "" {
+		args = append(args, tags)
+	}
+	args = append(args, target)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	if goos != "" {
-		cmd.Env = append(cmd.Env, "GOOS="+goos)
-	}
-	if goarch != "" {
-		cmd.Env = append(cmd.Env, "GOARCH="+goarch)
-	}
+	cmd.Env = platformEnv(p, b)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
