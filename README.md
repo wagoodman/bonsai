@@ -26,6 +26,7 @@ There are a handful of subcommands, each answering one question:
 | `bonsai .` | What's in my binary, and which module owns each byte? |
 | `bonsai prune .` | Which dependencies are worth cutting, ranked, and in what order? |
 | `bonsai go-version .` | How low can my `go` directive go, and which deps pin it? |
+| `bonsai diff REF .` | What did this branch do to my size and go floor versus REF? |
 | `bonsai inspect MODULE .` | I'm cutting module X, so which files do I edit, and what happens? |
 | `bonsai check .` | Is the committed budget still met? (a CI gate; non-zero exit on violation) |
 
