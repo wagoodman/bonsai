@@ -105,6 +105,15 @@ analysis:
     - { goos: linux,   goarch: amd64, tags: [netgo] }
 ```
 
+Already ship with goreleaser? Flip one switch and bonsai derives the whole matrix (and each build's tags/env/flags) from your `.goreleaser.yaml` instead, so the cells you analyze are exactly the cells you release. Mutually exclusive with `matrix:` / `--platform`:
+
+```yaml
+analysis:
+  goreleaser: true              # read .goreleaser.yaml: every build's goos x goarch (minus
+                                # ignores, or its targets), with that build's tags/env/flags.
+                                # templated values like -X main.version={{.Version}} are dummied
+```
+
 ### Persisted build settings
 
 If your build needs specific flags, tags, or env to resolve the same graph the real build does, persist them under `analysis.build`. They apply to every command, and the matrix's per-cell `tags` extend `build.tags`:

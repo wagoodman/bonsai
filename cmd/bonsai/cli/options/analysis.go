@@ -42,6 +42,9 @@ type Build struct {
 	// Matrix declares the build cells for `bonsai matrix` (the analysis.matrix section). Other
 	// subjects ignore it.
 	Matrix []bonsai.Platform `yaml:"matrix" json:"matrix" mapstructure:"matrix"`
+	// Goreleaser, when true, derives the matrix and per-cell build flags from the project's
+	// .goreleaser.yaml instead of analysis.matrix. Mutually exclusive with matrix/--platform.
+	Goreleaser bool `yaml:"goreleaser" json:"goreleaser" mapstructure:"goreleaser"`
 
 	Dir string `yaml:"-" json:"-" mapstructure:"-"` // set from the positional directory argument
 }

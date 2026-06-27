@@ -46,6 +46,7 @@ func buildForAnalysis(dir, target string, p Platform, b BuildSettings) (buildArt
 	// in the tags/build.tags field, not args.
 	args := []string{"build"}
 	args = append(args, splitArgs(b.Args)...)
+	args = append(args, splitArgs(p.Args)...)
 	args = append(args, "-o", binF.Name(), "-ldflags=-dumpdep")
 	if tags := tagsArg(effectiveTags(b, p)); tags != "" {
 		args = append(args, tags)

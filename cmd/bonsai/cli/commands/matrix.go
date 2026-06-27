@@ -57,13 +57,10 @@ func Matrix(app clio.Application) *cobra.Command {
 }
 
 func runMatrix(opts *matrixConfig) error {
-	cells, defaulted, err := resolveCells(opts)
+	cfg := opts.Config()
+	cells, err := resolveCells(opts, &cfg)
 	if err != nil {
 		return err
-	}
-	if defaulted {
-		bus.Notify("note: no matrix declared; using the default linux/amd64, darwin/arm64, windows/amd64 " +
-			"(set analysis.matrix in .bonsai.yaml or pass --platform to override)")
 	}
 
 	jobs := opts.Jobs
@@ -71,7 +68,7 @@ func runMatrix(opts *matrixConfig) error {
 		jobs = min(len(cells), runtime.GOMAXPROCS(0))
 	}
 
-	rep, err := bonsai.Matrix(opts.Config(), cells, opts.Size, jobs)
+	rep, err := bonsai.Matrix(cfg, cells, opts.Size, jobs)
 	if err != nil {
 		return err
 	}
@@ -100,24 +97,49 @@ func runMatrix(opts *matrixConfig) error {
 	return nil
 }
 
-// resolveCells picks the build cells for this run: --platform flags (which replace the config
-// matrix), else the configured analysis.matrix, else the built-in default set (with defaulted=true
-// so the caller can note it).
-func resolveCells(opts *matrixConfig) (cells []bonsai.Platform, defaulted bool, err error) {
+// resolveCells picks the build cells for this run and may adjust cfg (goreleaser fills in the
+// build target). Precedence: goreleaser import (mutually exclusive with the rest), else --platform
+// flags, else the configured analysis.matrix, else the built-in default set.
+func resolveCells(opts *matrixConfig, cfg *bonsai.Config) ([]bonsai.Platform, error) {
+	if opts.Goreleaser {
+		if len(opts.Platforms) > 0 || len(opts.Build.Matrix) > 0 {
+			return nil, fmt.Errorf("analysis.goreleaser is mutually exclusive with the matrix / --platform list")
+		}
+		imp, err := bonsai.FromGoreleaser(cfg.Dir)
+		if err != nil {
+			return nil, err
+		}
+		// goreleaser carries its build flags/env per-cell, so the global build settings (from
+		// analysis.build) don't apply; the target comes from the goreleaser build unless the user
+		// set one explicitly.
+		cfg.Build = bonsai.BuildSettings{}
+		if cfg.Target == "" {
+			cfg.Target = imp.Target
+		}
+		note := fmt.Sprintf("note: matrix derived from %s (%d cells)", imp.File, len(imp.Cells))
+		if imp.Builds > 1 {
+			note += fmt.Sprintf(" across %d builds", imp.Builds)
+		}
+		bus.Notify(note)
+		return imp.Cells, nil
+	}
 	if len(opts.Platforms) > 0 {
+		var cells []bonsai.Platform
 		for _, s := range opts.Platforms {
-			p, perr := parsePlatform(s, opts.Tags)
-			if perr != nil {
-				return nil, false, perr
+			p, err := parsePlatform(s, opts.Tags)
+			if err != nil {
+				return nil, err
 			}
 			cells = append(cells, p)
 		}
-		return cells, false, nil
+		return cells, nil
 	}
 	if len(opts.Build.Matrix) > 0 {
-		return opts.Build.Matrix, false, nil
+		return opts.Build.Matrix, nil
 	}
-	return defaultMatrix(), true, nil
+	bus.Notify("note: no matrix declared; using the default linux/amd64, darwin/arm64, windows/amd64 " +
+		"(set analysis.matrix in .bonsai.yaml, enable analysis.goreleaser, or pass --platform)")
+	return defaultMatrix(), nil
 }
 
 // parsePlatform parses an "os/arch" or "os/arch+tag,tag" cell, appending extraTags (from --tags).

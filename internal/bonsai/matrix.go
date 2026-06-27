@@ -8,13 +8,17 @@ import (
 	"sync"
 )
 
-// Platform is one build cell: a GOOS/GOARCH target and a set of build tags. The zero value
-// means "host platform, no extra tags" — exactly the original single-build behavior, so every
-// existing call site keeps working unchanged.
+// Platform is one build cell: a GOOS/GOARCH target, build tags, and optional per-cell env/args
+// overrides. The zero value means "host platform, no extra tags" — exactly the original
+// single-build behavior, so every existing call site keeps working unchanged. Env and Args layer
+// on top of the global BuildSettings (cell wins), which is how goreleaser cells carry each
+// build's own env (e.g. CGO on for darwin only) and flags without a per-build global setting.
 type Platform struct {
-	GOOS   string   `json:"goos,omitempty" yaml:"goos" mapstructure:"goos"`
-	GOARCH string   `json:"goarch,omitempty" yaml:"goarch" mapstructure:"goarch"`
-	Tags   []string `json:"tags,omitempty" yaml:"tags" mapstructure:"tags"`
+	GOOS   string            `json:"goos,omitempty" yaml:"goos" mapstructure:"goos"`
+	GOARCH string            `json:"goarch,omitempty" yaml:"goarch" mapstructure:"goarch"`
+	Tags   []string          `json:"tags,omitempty" yaml:"tags" mapstructure:"tags"`
+	Env    map[string]string `json:"env,omitempty" yaml:"env" mapstructure:"env"`
+	Args   string            `json:"args,omitempty" yaml:"args" mapstructure:"args"`
 }
 
 // Label is the cell's display key: "linux/amd64", or "linux/amd64+cgo,netgo" when tags are set
@@ -77,11 +81,14 @@ func tagsArg(tags []string) string {
 	return "-tags=" + strings.Join(tags, ",")
 }
 
-// platformEnv returns the process env with the persisted env overrides applied, then GOOS/GOARCH
-// for the cell (host values when the cell leaves them empty).
+// platformEnv returns the process env with the global env overrides applied, then the cell's own
+// env (which wins), then GOOS/GOARCH for the cell (host values when the cell leaves them empty).
 func platformEnv(p Platform, b BuildSettings) []string {
 	env := os.Environ()
 	for k, v := range b.Env {
+		env = append(env, k+"="+v)
+	}
+	for k, v := range p.Env {
 		env = append(env, k+"="+v)
 	}
 	if p.GOOS != "" {

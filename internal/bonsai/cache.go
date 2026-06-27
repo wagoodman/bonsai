@@ -136,6 +136,7 @@ func platformCacheKey(commit, target string, p Platform, b BuildSettings) string
 		goos, goarch, runtime.Version(),
 		os.Getenv("GOFLAGS"), os.Getenv("CGO_ENABLED"), os.Getenv("GOEXPERIMENT"),
 		strings.Join(effectiveTags(b, p), ","), b.Args, sortedEnvString(b.Env),
+		p.Args, sortedEnvString(p.Env),
 	} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})

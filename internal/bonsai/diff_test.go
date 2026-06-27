@@ -133,7 +133,7 @@ func TestBuildDiff_ZeroNetButChanged(t *testing.T) {
 func TestBuildDiff_EmptySides(t *testing.T) {
 	mods := SizeReport{
 		MainModule: "m",
-		Modules: []ModuleSize{{Module: "m"}, {Module: "example.com/dep", Size: 100}},
+		Modules:    []ModuleSize{{Module: "m"}, {Module: "example.com/dep", Size: 100}},
 	}
 	empty := SizeReport{MainModule: "m", Modules: []ModuleSize{{Module: "m"}}}
 

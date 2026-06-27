@@ -52,11 +52,13 @@ func TestPlatformCacheKey(t *testing.T) {
 		"identical inputs hash identically")
 
 	distinct := map[string]string{
-		"different goos":   platformCacheKey("commit1", "target", Platform{GOOS: "windows", GOARCH: "amd64"}, BuildSettings{}),
-		"different tags":   platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64", Tags: []string{"netgo"}}, BuildSettings{}),
-		"different env":    platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64"}, BuildSettings{Env: map[string]string{"CGO_ENABLED": "0"}}),
-		"different args":   platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64"}, BuildSettings{Args: "-trimpath"}),
-		"different commit": platformCacheKey("commit2", "target", Platform{GOOS: "linux", GOARCH: "amd64"}, BuildSettings{}),
+		"different goos":      platformCacheKey("commit1", "target", Platform{GOOS: "windows", GOARCH: "amd64"}, BuildSettings{}),
+		"different tags":      platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64", Tags: []string{"netgo"}}, BuildSettings{}),
+		"different env":       platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64"}, BuildSettings{Env: map[string]string{"CGO_ENABLED": "0"}}),
+		"different args":      platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64"}, BuildSettings{Args: "-trimpath"}),
+		"different commit":    platformCacheKey("commit2", "target", Platform{GOOS: "linux", GOARCH: "amd64"}, BuildSettings{}),
+		"different cell env":  platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64", Env: map[string]string{"CGO_ENABLED": "1"}}, BuildSettings{}),
+		"different cell args": platformCacheKey("commit1", "target", Platform{GOOS: "linux", GOARCH: "amd64", Args: "-trimpath"}, BuildSettings{}),
 	}
 	for name, key := range distinct {
 		assert.NotEqual(t, base, key, name+" must change the key")
