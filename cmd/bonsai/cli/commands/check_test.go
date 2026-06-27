@@ -67,6 +67,19 @@ func TestEvaluateBudget(t *testing.T) {
 			wantPass: true,
 		},
 		{
+			name:     "binary exactly at cap passes",
+			size:     size(25_000_000, 25_000_000), // == limit, the gate is strictly >
+			check:    options.Check{MaxBinarySize: "25MB"},
+			wantPass: true,
+		},
+		{
+			name:      "binary one byte over cap fails",
+			size:      size(25_000_001, 25_000_001),
+			check:     options.Check{MaxBinarySize: "25MB"},
+			wantPass:  false,
+			wantRules: []string{"max-binary-size"},
+		},
+		{
 			name:      "binary over cap fails on accounted size",
 			size:      size(27_000_000, 30_000_000),
 			check:     options.Check{MaxBinarySize: "25MB"},
@@ -129,6 +142,21 @@ func TestEvaluateBudget(t *testing.T) {
 			check:     options.Check{MaxModuleSize: map[string]string{"github.com/klauspost/...": "2MB"}},
 			wantPass:  false,
 			wantRules: []string{"max-module-size"},
+		},
+		{
+			name:     "module exactly at cap passes",
+			size:     size(1, 1, inBuild("github.com/klauspost/compress", 2_000_000)), // == cap, strictly >
+			check:    options.Check{MaxModuleSize: map[string]string{"github.com/klauspost/compress": "2MB"}},
+			wantPass: true,
+		},
+		{
+			name: "module not in the build is skipped for deny and caps",
+			size: size(1, 1, bonsai.ModuleSize{Module: "github.com/aws/aws-sdk-go", Size: 9_000_000, InBuild: false}),
+			check: options.Check{
+				Deny:          []string{"github.com/aws/aws-sdk-go"},
+				MaxModuleSize: map[string]string{"github.com/aws/...": "2MB"},
+			},
+			wantPass: true, // a module present in go.mod but not linked into the build can't violate
 		},
 		{
 			name:     "warn action keeps pass true",

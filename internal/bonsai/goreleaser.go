@@ -65,6 +65,10 @@ func (s *glStringList) UnmarshalYAML(value *yaml.Node) error {
 			return err
 		}
 		*s = list
+	default:
+		// a mapping (or anything else) here is a misconfigured goreleaser file; surface it rather
+		// than silently treating the field as empty.
+		return fmt.Errorf("line %d: expected a string or list of strings", value.Line)
 	}
 	return nil
 }

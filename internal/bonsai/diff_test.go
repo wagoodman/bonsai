@@ -167,6 +167,67 @@ func TestBuildDiff_FloorUnchangedButChurned(t *testing.T) {
 	assert.Equal(t, []string{"example.com/new"}, got.GoFloor.NewlyCritical)
 }
 
+// no dep imposed a floor before; now one does. Direction must read as raised and the new pinning
+// dep reported.
+func TestBuildDiff_FloorIntroduced(t *testing.T) {
+	r := SizeReport{MainModule: "m", Modules: []ModuleSize{{Module: "m"}}}
+	before := GoFloor{} // empty: nothing pinned the floor
+	after := GoFloor{Version: "1.24.0", Critical: []string{"example.com/new"}}
+	got := buildDiff(r, r, after, before)
+	assert.Equal(t, "", got.GoFloor.Before)
+	assert.Equal(t, "1.24.0", got.GoFloor.After)
+	assert.Equal(t, 1, got.GoFloor.Direction)
+	assert.Equal(t, []string{"example.com/new"}, got.GoFloor.NewlyCritical)
+}
+
+// baselineCommit must resolve to the merge-base (divergence point), not the named ref. The worktree
+// integration test only passes a direct ancestor, where merge-base == ref, so it can't catch a
+// regression to "use ref directly". This builds a real fork to pin the merge-base behavior.
+func TestBaselineCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := gitOutput(repo, args...)
+		require.NoError(t, err, "git %v", args)
+		return strings.TrimSpace(out)
+	}
+	commitAll := func(msg string) string {
+		run("add", ".")
+		run("commit", "-m", msg)
+		return run("rev-parse", "HEAD")
+	}
+
+	writeRepoFile(t, repo, "f", "base\n")
+	run("init")
+	run("config", "user.email", "t@t.test")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
+	fork := commitAll("base")
+	mainBranch := run("rev-parse", "--abbrev-ref", "HEAD")
+
+	// main advances past the fork point.
+	writeRepoFile(t, repo, "f", "main moved on\n")
+	commitAll("main advance")
+
+	// a feature branch off the fork point.
+	run("checkout", "-b", "feature", fork)
+	writeRepoFile(t, repo, "g", "feature work\n")
+	commitAll("feature work")
+
+	// diffing the feature branch against main should resolve to the fork point, not main's tip.
+	assert.Equal(t, fork, baselineCommit(repo, mainBranch), "merge-base is the divergence point")
+
+	// a ref with no common ancestor (an orphan) falls back to the ref itself.
+	run("checkout", "--orphan", "orphan")
+	writeRepoFile(t, repo, "h", "orphan\n")
+	orphan := commitAll("orphan root")
+	run("checkout", "feature")
+	assert.Equal(t, orphan, baselineCommit(repo, orphan), "no common ancestor falls back to the ref")
+}
+
 // TestResolveBaseline_Worktree is the one integration test: a throwaway git repo with two commits
 // whose source differs. It asserts the baseline builds the older state and cleanup removes the
 // worktree. Guarded on git + go being present (they are, in CI and dev).
@@ -187,6 +248,8 @@ func TestResolveBaseline_Worktree(t *testing.T) {
 	run("init")
 	run("config", "user.email", "t@t.test")
 	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false") // don't inherit the dev/global signing config
+	run("config", "tag.gpgsign", "false")
 	run("add", ".")
 	run("commit", "-m", "v1")
 	v1 := strings.TrimSpace(run("rev-parse", "HEAD"))

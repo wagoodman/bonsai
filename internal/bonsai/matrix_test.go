@@ -2,6 +2,7 @@ package bonsai
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,12 +36,69 @@ func TestSplitArgs(t *testing.T) {
 		{name: "double-quoted ldflags stays one arg", in: `-trimpath -ldflags="-s -w"`, want: []string{"-trimpath", "-ldflags=-s -w"}},
 		{name: "single-quoted value", in: `-ldflags='-X main.v=1'`, want: []string{"-ldflags=-X main.v=1"}},
 		{name: "collapses extra whitespace", in: "a   b\tc", want: []string{"a", "b", "c"}},
+		// an unterminated quote absorbs the rest into one arg rather than erroring — documents the
+		// non-strict behavior so a regression toward dropping the remainder is caught.
+		{name: "unterminated quote absorbs remainder", in: `-ldflags="-s -w`, want: []string{"-ldflags=-s -w"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, splitArgs(tt.in))
 		})
 	}
+}
+
+func TestEffectiveTags(t *testing.T) {
+	// persisted build tags merge with the cell's tags into one sorted-unique set.
+	got := effectiveTags(BuildSettings{Tags: []string{"netgo", "cgo"}}, Platform{Tags: []string{"osusergo", "netgo"}})
+	assert.Equal(t, []string{"cgo", "netgo", "osusergo"}, got)
+	assert.Empty(t, effectiveTags(BuildSettings{}, Platform{}))
+}
+
+func TestTagsArg(t *testing.T) {
+	assert.Equal(t, "", tagsArg(nil))
+	assert.Equal(t, "-tags=cgo,netgo", tagsArg([]string{"cgo", "netgo"}))
+}
+
+// platformEnv layers global env, then the cell's env (which wins), then GOOS/GOARCH for the cell.
+func TestPlatformEnv(t *testing.T) {
+	env := platformEnv(
+		Platform{GOOS: "windows", GOARCH: "arm64", Env: map[string]string{"CGO_ENABLED": "1"}},
+		BuildSettings{Env: map[string]string{"CGO_ENABLED": "0", "FOO": "bar"}},
+	)
+	// last value wins in a Go env slice, so assert ordering: the cell's CGO_ENABLED=1 comes after
+	// the global CGO_ENABLED=0, and GOOS/GOARCH are appended last.
+	idx := func(key string) int {
+		last := -1
+		for i, kv := range env {
+			if strings.HasPrefix(kv, key+"=") {
+				last = i
+			}
+		}
+		return last
+	}
+	assert.Contains(t, env, "FOO=bar")
+	assert.Contains(t, env, "GOOS=windows")
+	assert.Contains(t, env, "GOARCH=arm64")
+	assert.Equal(t, "CGO_ENABLED=1", env[idx("CGO_ENABLED")], "the cell's env wins over the global")
+	assert.Greater(t, idx("CGO_ENABLED"), indexOf(env, "CGO_ENABLED=0"), "cell env appended after global")
+}
+
+// host cell leaves GOOS/GOARCH unset so the build runs for the host platform.
+func TestPlatformEnvHost(t *testing.T) {
+	env := platformEnv(Platform{}, BuildSettings{})
+	for _, kv := range env {
+		assert.False(t, strings.HasPrefix(kv, "GOOS="), "host cell must not pin GOOS")
+		assert.False(t, strings.HasPrefix(kv, "GOARCH="), "host cell must not pin GOARCH")
+	}
+}
+
+func indexOf(s []string, want string) int {
+	for i, v := range s {
+		if v == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestPlatformCacheKey is the cache-collision guard: distinct cells (GOOS, tags, env, args) must
