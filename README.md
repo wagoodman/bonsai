@@ -27,6 +27,7 @@ There are a handful of subcommands, each answering one question:
 | `bonsai prune .` | Which dependencies are worth cutting, ranked, and in what order? |
 | `bonsai go-version .` | How low can my `go` directive go, and which deps pin it? |
 | `bonsai inspect MODULE .` | I'm cutting module X, so which files do I edit, and what happens? |
+| `bonsai check .` | Is the committed budget still met? (a CI gate; non-zero exit on violation) |
 
 ## The one knob worth setting
 
@@ -54,6 +55,28 @@ Every dependency lands in one of four buckets, and the bucket decides whether bo
 - **locked**: off-limits, never suggested. Everything 1st-class is locked by default; `--lock` locks more, `--unlock` explicitly re-opens modules for consideration.
 
 Widening `--controlled` promotes 3rd-class deps into 2nd-class candidates.
+
+## Keep the cut cut
+
+Pruning a dependency once doesn't keep it gone: a `go get` re-adds it, a transitive bump quietly grows the binary, a new dep raises your `go` floor. `bonsai check` turns the analysis into a CI gate. It reads a committed budget from `.bonsai.yaml`, runs the same build-and-resolve as the other commands, and exits non-zero when the budget is violated.
+
+```yaml
+check:
+  max-binary-size: 25MB          # gates the accounted (~ stripped / release) size; --binary gates the on-disk size instead
+  max-go-version: "1.23"         # fail if the dep-imposed go floor climbs above this
+  deny:                          # modules that must never reappear in the build
+    - github.com/aws/aws-sdk-go
+    - cloud.google.com/go/...
+  max-module-size:               # optional per-module size caps (pattern -> size)
+    github.com/klauspost/compress: 2MB
+  action: fail                   # what a violation does: fail (non-zero exit) | warn (print only)
+```
+
+```sh
+bonsai check .                   # exit 0 = pass, 2 = budget violated, 1 = tool/config error
+```
+
+Exit code 2 means "the gate failed" and 1 means "the tool broke", so CI can tell them apart. `deny` and `max-module-size` take the same patterns as `--lock`/`--controlled` (`github.com/org/...`, globs). `--output json` emits the machine form. An absent `check:` block exits 0 with a note. Set `action: warn` to print violations without failing the build.
 
 ## Four ways to look at it
 
