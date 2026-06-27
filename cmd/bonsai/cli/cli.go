@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 
 	"github.com/anchore/clio"
@@ -31,6 +32,14 @@ func New(id clio.Identification) clio.Application {
 				), nil
 			},
 		).
+		WithMapExitCode(func(err error) int {
+			// a failed budget gate exits 2 so CI can tell it apart from an operational error (1).
+			var bf *commands.BudgetFailedError
+			if errors.As(err, &bf) {
+				return 2
+			}
+			return 1
+		}).
 		WithInitializers(
 			func(state *clio.State) error {
 				// clio is setting up and providing the bus, redact store, and logger to the application. Once loaded,
@@ -52,6 +61,7 @@ func New(id clio.Identification) clio.Application {
 	root.AddCommand(commands.Anatomy(app))
 	root.AddCommand(commands.Prune(app))
 	root.AddCommand(commands.GoVersion(app))
+	root.AddCommand(commands.Check(app))
 	root.AddCommand(commands.Inspect(app))
 	root.AddCommand(commands.Config(app))
 	root.AddCommand(commands.Lock())

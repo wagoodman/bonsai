@@ -82,6 +82,82 @@ func WriteGoFloorMarkdown(w io.Writer, f bonsai.GoFloor) error {
 	return (&report{w: w, md: true}).writeGoFloor(f)
 }
 
+// CheckReport is the result of evaluating the budget: the measured values plus any violations.
+// It is assembled by the check command from already-exported engine results, not by the engine.
+type CheckReport struct {
+	Pass            bool        `json:"pass"`            // true if no fail-action violations
+	BinarySize      uint64      `json:"binarySize"`      // size gated this run (see BinarySizeLabel for which metric)
+	BinarySizeLabel string      `json:"binarySizeLabel"` // "stripped binary" (accounted) or "on-disk binary" (--binary)
+	GoFloor         string      `json:"goFloor"`         // dep-imposed floor measured this run
+	Configured      bool        `json:"configured"`      // false when no check: block is set
+	Violations      []Violation `json:"violations,omitempty"`
+}
+
+// Violation is a single budget breach: which rule, how bad, and the limit-vs-actual numbers in
+// human form for direct display.
+type Violation struct {
+	Rule    string `json:"rule"`             // "max-binary-size" | "max-go-version" | "deny" | "max-module-size"
+	Action  string `json:"action"`           // "fail" | "warn"
+	Module  string `json:"module,omitempty"` // set for deny / max-module-size
+	Limit   string `json:"limit"`            // human form, e.g. "25MB" or "1.23"
+	Actual  string `json:"actual"`           // human form, e.g. "27MB" or "1.24"
+	Message string `json:"message"`          // one-line human explanation
+}
+
+// WriteCheckTable renders the budget evaluation: a pass/fail summary line and a table of any
+// violations.
+func WriteCheckTable(w io.Writer, rep *CheckReport, color bool) error {
+	setColor(color)
+	return (&report{w: w, pal: palette{on: color}}).writeCheck(rep)
+}
+
+// WriteCheckMarkdown renders the budget evaluation with markdown headings and a pipe table.
+func WriteCheckMarkdown(w io.Writer, rep *CheckReport) error {
+	return (&report{w: w, md: true}).writeCheck(rep)
+}
+
+// writeCheck renders the budget evaluation: a summary line then the violations table.
+func (r *report) writeCheck(rep *CheckReport) error {
+	if !rep.Configured {
+		r.heading("Budget check", "no check: block configured — nothing to enforce")
+		return nil
+	}
+
+	r.heading("Budget check", fmt.Sprintf("%s %s · go floor %s", rep.BinarySizeLabel, humize(rep.BinarySize), goFloorLabel(rep.GoFloor)))
+	if rep.Pass {
+		r.floorNote(r.pal.good("PASS — within budget"))
+	} else {
+		fails := 0
+		for _, v := range rep.Violations {
+			if v.Action == "fail" {
+				fails++
+			}
+		}
+		r.floorNote(r.pal.warn(fmt.Sprintf("FAIL — %d violation(s)", fails)))
+	}
+	fmt.Fprintln(r.w)
+
+	rows := make([][]string, 0, len(rep.Violations))
+	for _, v := range rep.Violations {
+		act := r.pal.warn(v.Action)
+		if v.Action == "warn" {
+			act = r.pal.dim(v.Action)
+		}
+		rows = append(rows, []string{act, v.Rule, v.Module, v.Limit, v.Actual})
+	}
+	r.table([]string{"ACTION", "RULE", colModule, "LIMIT", "ACTUAL"}, rows, nil)
+	return nil
+}
+
+// goFloorLabel renders a measured floor for the summary line, naming the empty case so a build
+// that imposes no floor doesn't read as a blank.
+func goFloorLabel(v string) string {
+	if v == "" {
+		return "(none)"
+	}
+	return "go " + v
+}
+
 // WriteInspectTable renders the single-module drill-down: entry-package weights, import sites,
 // drag-out, and the go-version floor delta.
 func WriteInspectTable(w io.Writer, rep *bonsai.InspectReport, color bool) error {
