@@ -16,11 +16,13 @@ import (
 	"github.com/wagoodman/bonsai/internal/configedit"
 )
 
-// Explore is the `bonsai explore` command: an interactive prune explorer. It is a plain cobra
-// command (not wired through clio) so its full-screen TUI owns stdin without the progress
-// event-loop UI contending for it. The build/analysis runs first under the same task-progress
-// UI the root command shows (via ui.RunWithProgress), which tears down before the TUI starts.
-func Explore(id clio.Identification) *cobra.Command {
+// wireExplore attaches the interactive prune explorer to cmd: a what-if TUI where every
+// dependency candidate starts selected for removal and you deselect what you need. It is the
+// root command's action (running `bonsai` with no subcommand). The RunE is left unwrapped by
+// clio's event-loop so the full-screen TUI owns stdin; the build/analysis runs first under the
+// same task-progress UI the static reports show (via ui.RunWithProgress), which tears down
+// before the TUI starts. See Root for why this isn't wired as a normal clio RunE.
+func wireExplore(cmd *cobra.Command, id clio.Identification) {
 	// the TUI shows "bonsai · <version>" in its status bar; hide the unset build-time default
 	// ("[not provided]" from main.go) that ldflags overrides on real releases.
 	version := id.Version
@@ -34,32 +36,19 @@ func Explore(id clio.Identification) *cobra.Command {
 		locked     []string
 		unlock     []string
 	)
-	cmd := &cobra.Command{
-		Use:   "explore [DIR]",
-		Short: "interactively explore what happens to your binary size when you prune certain dependencies",
-		Long: "explore opens a what-if TUI: every dependency candidate starts selected for removal — " +
-			"deselect the ones you need with space. The summary bar shows the projected binary size and how " +
-			"many modules actually get pruned; the right panes show what the highlighted module drags out " +
-			"(and what survives, held by others) and why it's in the build. Lock/class edits are saved to " +
-			".bonsai.yaml (the same list `bonsai config lock` writes, honored by every command); your what-if " +
-			"selection is remembered per scanned module across runs. Press ? inside for the full legend — the " +
-			"1st/2nd/3rd-class model, locked/unlocked, the panes, and the keys. The prune set isn't applied — " +
-			"enter saves your lock/class edits and prints what would be pruned.",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			dir := "."
-			if len(args) == 1 {
-				dir = args[0]
-			}
-			return runExplore(c, bonsai.Config{
-				Dir:        dir,
-				Target:     target,
-				Binary:     binary,
-				Controlled: controlled,
-				Locked:     locked,
-				Unlock:     unlock,
-			}, version)
-		},
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		dir := "."
+		if len(args) == 1 {
+			dir = args[0]
+		}
+		return runExplore(c, bonsai.Config{
+			Dir:        dir,
+			Target:     target,
+			Binary:     binary,
+			Controlled: controlled,
+			Locked:     locked,
+			Unlock:     unlock,
+		}, version)
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&target, "target", "", "entrypoint package to build and analyze")
@@ -67,7 +56,6 @@ func Explore(id clio.Identification) *cobra.Command {
 	flags.StringArrayVarP(&controlled, "controlled", "C", nil, "1st-class module patterns whose imports are cuttable")
 	flags.StringArrayVarP(&locked, "lock", "l", nil, "module patterns to lock (never offered for pruning)")
 	flags.StringArrayVar(&unlock, "unlock", nil, "locked modules to re-open as prune candidates")
-	return cmd
 }
 
 func runExplore(cmd *cobra.Command, cfg bonsai.Config, version string) error {
