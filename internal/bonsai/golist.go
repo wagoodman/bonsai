@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -46,6 +45,21 @@ type buildGraph struct {
 	controlled map[string]bool
 }
 
+// counts returns the graph's size for the progress UI: known packages (nodes), import edges, and
+// non-std modules.
+func (g *buildGraph) counts() (pkgs, edges, mods int) {
+	pkgs = len(g.packages)
+	for _, p := range g.packages {
+		edges += len(p.Imports)
+	}
+	for m := range g.allModules {
+		if m != "" {
+			mods++
+		}
+	}
+	return pkgs, edges, mods
+}
+
 // isControlled reports whether m is a 1st-class module (editable source). The main module
 // is always controlled. Before classify() runs, controlled is nil and only the main module
 // qualifies, which preserves the original "first-party = main module only" cut model.
@@ -56,18 +70,20 @@ func (g *buildGraph) isControlled(m string) bool {
 	return g.controlled[m]
 }
 
-// loadBuildGraph runs `go list -deps -json <target>` in dir and assembles the graph.
-// goos/goarch, when set, constrain the build to match the analyzed binary's platform.
-func loadBuildGraph(dir, target, goos, goarch string) (*buildGraph, error) {
-	cmd := exec.Command("go", "list", "-deps", "-json", target)
+// loadBuildGraph runs `go list -deps -json <target>` in dir and assembles the graph. p and b,
+// when non-zero, constrain the list to a specific build cell (GOOS/GOARCH/tags) and env so the
+// graph describes the same build the matrix (or a prebuilt binary's platform) cares about. The
+// freeform build args (b.Args) are deliberately not passed: `go list` rejects build-only flags
+// like -ldflags, and they don't change which packages are imported.
+func loadBuildGraph(dir, target string, p Platform, b BuildSettings) (*buildGraph, error) {
+	args := []string{"list", "-deps", "-json"}
+	if tags := tagsArg(effectiveTags(b, p)); tags != "" {
+		args = append(args, tags)
+	}
+	args = append(args, target)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	if goos != "" {
-		cmd.Env = append(cmd.Env, "GOOS="+goos)
-	}
-	if goarch != "" {
-		cmd.Env = append(cmd.Env, "GOARCH="+goarch)
-	}
+	cmd.Env = platformEnv(p, b)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

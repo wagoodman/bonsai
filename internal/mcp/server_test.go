@@ -29,7 +29,7 @@ func connect(t *testing.T) *mcp.ClientSession {
 	return cs
 }
 
-// the server must advertise exactly the five intent-named tools.
+// the server must advertise exactly the intent-named tools.
 func TestServerListsTools(t *testing.T) {
 	cs := connect(t)
 	res, err := cs.ListTools(context.Background(), nil)
@@ -40,10 +40,14 @@ func TestServerListsTools(t *testing.T) {
 		got[tool.Name] = true
 		assert.NotEmpty(t, tool.Description, "tool %s missing description", tool.Name)
 	}
-	for _, want := range []string{"bonsai_anatomy", "bonsai_size_targets", "bonsai_go_floor", "bonsai_locate_cuts", "bonsai_measure"} {
-		assert.Truef(t, got[want], "missing tool %s", want)
+	want := []string{
+		"bonsai_anatomy", "bonsai_size_targets", "bonsai_go_floor", "bonsai_locate_cuts", "bonsai_measure",
+		"bonsai_diff", "bonsai_check", "bonsai_matrix",
 	}
-	assert.Len(t, res.Tools, 5)
+	for _, name := range want {
+		assert.Truef(t, got[name], "missing tool %s", name)
+	}
+	assert.Len(t, res.Tools, len(want))
 }
 
 // calling bonsai_size_targets against the bonsai module itself returns ranked candidates with

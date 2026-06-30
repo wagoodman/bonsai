@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -105,7 +106,7 @@ func (snap *buildSnapshot) rebuild() (*binaryInfo, *buildGraph) {
 // can't be safely cached (no git, a dirty tree, or caching disabled). It folds in everything
 // that changes the built binary: the source commit, the target, the host platform, the Go
 // toolchain, the build env, and the cache format.
-func resolveCacheKey(dir, target string) (string, bool) {
+func resolveCacheKey(dir, target string, p Platform, b BuildSettings) (string, bool) {
 	if os.Getenv("BONSAI_NO_CACHE") != "" {
 		return "", false
 	}
@@ -113,16 +114,54 @@ func resolveCacheKey(dir, target string) (string, bool) {
 	if commit == "" || !clean {
 		return "", false // only cache reproducible, committed source
 	}
+	return platformCacheKey(commit, target, p, b), true
+}
+
+// platformCacheKey hashes everything that changes the resolved build for a given source commit:
+// the target, the effective cell (GOOS/GOARCH/tags, falling back to the host runtime), the
+// persisted build env/args, the Go toolchain, and the cache format. Folding the cell + build
+// settings in means two matrix cells on the same commit get distinct keys instead of colliding.
+func platformCacheKey(commit, target string, p Platform, b BuildSettings) string {
+	goos := p.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	goarch := p.GOARCH
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
 	h := sha256.New()
 	for _, part := range []string{
 		cacheFormat, commit, target,
-		runtime.GOOS, runtime.GOARCH, runtime.Version(),
+		goos, goarch, runtime.Version(),
 		os.Getenv("GOFLAGS"), os.Getenv("CGO_ENABLED"), os.Getenv("GOEXPERIMENT"),
+		strings.Join(effectiveTags(b, p), ","), b.Args, sortedEnvString(b.Env),
+		p.Args, sortedEnvString(p.Env),
 	} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
-	return hex.EncodeToString(h.Sum(nil)), true
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// sortedEnvString flattens an env-override map into a stable "k=v\x00k=v" string for hashing.
+func sortedEnvString(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for _, k := range keys {
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		sb.WriteString(env[k])
+		sb.WriteByte(0)
+	}
+	return sb.String()
 }
 
 // gitState returns dir's HEAD commit and whether the working tree is clean (no modified or

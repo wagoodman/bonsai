@@ -8,6 +8,7 @@ import (
 
 	"github.com/wagoodman/bonsai/internal/bus"
 	"github.com/wagoodman/bonsai/internal/event"
+	"github.com/wagoodman/bonsai/internal/humanize"
 )
 
 // Config is the input to an analysis run.
@@ -21,6 +22,20 @@ type Config struct {
 	Dir    string // module directory to build/analyze (default: current directory)
 	Target string // build target package (default: the module's sole main package)
 	Binary string // analyze this prebuilt binary instead of building from source (fallback mode)
+
+	// Platform selects the build cell: a GOOS/GOARCH target and a set of build tags. The zero
+	// value means "host platform, no extra tags" — exactly the original behavior, so existing
+	// call sites are unchanged. The matrix command sets it per cell.
+	Platform Platform
+
+	// Build holds persisted build defaults (extra tags, env overrides, freeform go-toolchain
+	// args) applied to every build/list. Platform.Tags extend Build.Tags per cell. Zero value
+	// is the host toolchain with no extra flags.
+	Build BuildSettings
+
+	// BuildLabel names where the build settings came from (e.g. "goreleaser"), surfaced in the
+	// build progress line so it's clear the flags weren't bonsai's own defaults. Optional.
+	BuildLabel string
 
 	// Controlled lists the 1st-class modules whose source the user can edit — the modules
 	// whose imports are "cuttable". The main module is always controlled. Widening this
@@ -70,22 +85,14 @@ func resolve(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 // the linker's -dumpdep reachability), then load the artifact we produced. Source and binary
 // always match, and reachability reflects what actually linked.
 func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
-	dir := cfg.Dir
-	if dir == "" {
-		dir = "."
-	}
-	target := cfg.Target
-	if target == "" {
-		t, err := detectTarget(dir)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		target = t
+	dir, target, err := dirTarget(cfg)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	// a clean git checkout resolves identically every time; reuse the cached snapshot to skip
 	// the expensive -dumpdep re-link (the linker can't be served from cache, see cache.go).
-	key, cacheable := resolveCacheKey(dir, target)
+	key, cacheable := resolveCacheKey(dir, target, cfg.Platform, cfg.Build)
 	if cacheable {
 		if bin, g, err := loadResolveCache(key); err == nil {
 			cacheTask := startTask("Load cached analysis", "Loading cached analysis", "Loaded cached analysis (same commit)")
@@ -95,11 +102,17 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	}
 
 	buildTask := startTask("Build binary", "Building binary", "Binary built")
-	arts, cleanup, err := buildForAnalysis(dir, target)
+	arts, cleanup, err := buildForAnalysis(dir, target, cfg.Platform, cfg.Build)
 	if err != nil {
 		buildTask.SetError(err)
 		return nil, nil, nil, err
 	}
+	// grey aux: how it was built (GOOS/GOARCH + flags), prefixed with the source when known.
+	stage := arts.Command
+	if cfg.BuildLabel != "" {
+		stage = cfg.BuildLabel + ": " + stage
+	}
+	buildTask.SetStage(stage)
 	buildTask.SetCompleted()
 
 	loadTask := startTask("Load binary", "Loading binary", "Binary loaded")
@@ -109,10 +122,11 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 		cleanup()
 		return nil, nil, nil, err
 	}
+	loadTask.SetStage(loadDesc(arts.Binary, bin))
 	loadTask.SetCompleted()
 
 	graphTask := startTask("Resolve build graph", "Resolving build graph", "Build graph resolved")
-	g, err := loadBuildGraph(dir, target, "", "") // built for host
+	g, err := loadBuildGraph(dir, target, cfg.Platform, cfg.Build)
 	if err != nil {
 		graphTask.SetError(err)
 		cleanup()
@@ -123,12 +137,32 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	if n, derr := applyReferenceEdges(g, arts.Dumpdep); derr != nil || n == 0 {
 		bus.Notify("note: could not use linker reachability (-dumpdep); falling back to source imports")
 	}
+	graphTask.SetStage(graphDesc(g))
 	graphTask.SetCompleted()
 
 	if cacheable {
 		storeResolveCache(key, bin, g) // best-effort; the analysis is correct regardless
 	}
 	return bin, g, cleanup, nil
+}
+
+// dirTarget resolves the effective module directory and build target from cfg, defaulting the
+// directory to "." and detecting the sole main package when Target is unset. Shared by the
+// source resolvers and the build-free graph path.
+func dirTarget(cfg Config) (dir, target string, err error) {
+	dir = cfg.Dir
+	if dir == "" {
+		dir = "."
+	}
+	target = cfg.Target
+	if target == "" {
+		t, derr := detectTarget(dir)
+		if derr != nil {
+			return "", "", derr
+		}
+		target = t
+	}
+	return dir, target, nil
 }
 
 // optsFrom derives the internal analysis options (classification inputs) from the public
@@ -164,6 +198,7 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 		loadTask.SetError(err)
 		return nil, nil, err
 	}
+	loadTask.SetStage(loadDesc(cfg.Binary, bin))
 	loadTask.SetCompleted()
 
 	target := cfg.Target
@@ -183,11 +218,12 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 	}
 
 	graphTask := startTask("Resolve build graph", "Resolving build graph", "Build graph resolved")
-	g, err := loadBuildGraph(dir, target, bin.GOOS, bin.GOARCH)
+	g, err := loadBuildGraph(dir, target, Platform{GOOS: bin.GOOS, GOARCH: bin.GOARCH}, cfg.Build)
 	if err != nil {
 		graphTask.SetError(err)
 		return nil, nil, err
 	}
+	graphTask.SetStage(graphDesc(g))
 	graphTask.SetCompleted()
 
 	return bin, g, nil
@@ -202,6 +238,17 @@ func startTask(title, running, success string) *event.ManualStagedProgress {
 		WhileRunning: running,
 		OnSuccess:    success,
 	}, "", -1)
+}
+
+// loadDesc is the grey aux for a loaded binary: its path and on-disk size.
+func loadDesc(path string, bin *binaryInfo) string {
+	return fmt.Sprintf("%s (%s)", path, humanize.Bytes(bin.FileSize))
+}
+
+// graphDesc is the grey aux for a resolved build graph: package, module, and edge counts.
+func graphDesc(g *buildGraph) string {
+	pkgs, edges, mods := g.counts()
+	return fmt.Sprintf("%d packages, %d modules, %d edges", pkgs, mods, edges)
 }
 
 // findModuleDir walks up from the current directory looking for a go.mod whose module

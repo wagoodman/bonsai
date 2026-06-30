@@ -79,14 +79,9 @@ func parseDiffArgs(args []string) (dir, ref string) {
 }
 
 func runDiff(opts *diffConfig) error {
-	rep, err := bonsai.Diff(bonsai.Config{
-		Dir:        opts.Dir,
-		Target:     opts.Target,
-		Binary:     opts.Binary,
-		Controlled: opts.Controlled,
-		Locked:     opts.Lock,
-		Unlock:     opts.Unlock,
-	}, opts.ref)
+	// Config() carries the persisted analysis.build settings (and any goreleaser-derived ones), so
+	// both sides of the diff build the same way the other subjects do.
+	rep, err := bonsai.Diff(opts.Config(), opts.ref)
 	if err != nil {
 		return err
 	}

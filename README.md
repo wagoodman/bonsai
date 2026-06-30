@@ -27,6 +27,7 @@ There are a handful of subcommands, each answering one question:
 | `bonsai prune .` | Which dependencies are worth cutting, ranked, and in what order? |
 | `bonsai go-version .` | How low can my `go` directive go, and which deps pin it? |
 | `bonsai diff REF .` | What did this branch do to my size and go floor versus REF? |
+| `bonsai matrix .` | Across every platform I ship, what's the worst-case floor, and which deps are platform-specific? |
 | `bonsai inspect MODULE .` | I'm cutting module X, so which files do I edit, and what happens? |
 | `bonsai check .` | Is the committed budget still met? (a CI gate; non-zero exit on violation) |
 
@@ -78,6 +79,58 @@ bonsai check .                   # exit 0 = pass, 2 = budget violated, 1 = tool/
 ```
 
 Exit code 2 means "the gate failed" and 1 means "the tool broke", so CI can tell them apart. `deny` and `max-module-size` take the same patterns as `--lock`/`--controlled` (`github.com/org/...`, globs). `--output json` emits the machine form. An absent `check:` block exits 0 with a note. Set `action: warn` to print violations without failing the build.
+
+## One build is one platform
+
+Every other subcommand analyzes a single build: whatever the host produces. That quietly makes two of bonsai's answers platform-specific. Binary size shifts across `GOOS`/`GOARCH` and build tags, and the go-version floor is worse, since the set of modules in the build changes with the platform. A tagged file can pull a dependency whose `go.mod` declares a higher `go` directive on only one OS, so your repo is 1.21 on linux and 1.23 on windows. The floor that actually constrains *your* `go.mod` is the max across every platform you ship, which means the single-host floor can be flat wrong (too low).
+
+`bonsai matrix` runs the analysis across a set of build cells and reports the worst-case floor (the max over the cells, the number to put in `go.mod`), which deps pin it, and which modules are universal versus platform-specific:
+
+```sh
+bonsai matrix .                 # worst-case floor, no builds (just `go list` per cell)
+bonsai matrix . --size          # also build each cell and attribute per-cell size
+bonsai matrix . --platform linux/amd64 --platform windows/amd64   # ad-hoc, ignore the config
+```
+
+The default subject is floor-only: N `go list` calls, cheap, and it cross-compiles without a cgo toolchain. `--size` builds each cell, which is the expensive path; a cell that can't build (a cgo cell with no cross toolchain) is reported as failed without sinking the rest. Declare the cells once in `.bonsai.yaml` so they live in version control next to your class lists:
+
+```yaml
+analysis:
+  controlled:
+    - github.com/yourorg/...
+  matrix:
+    - { goos: linux,   goarch: amd64 }
+    - { goos: darwin,  goarch: arm64 }
+    - { goos: windows, goarch: amd64 }
+    - { goos: linux,   goarch: amd64, tags: [netgo] }
+```
+
+Already ship with goreleaser? Then you don't declare a matrix at all: if there's a `.goreleaser.yaml`, bonsai uses it automatically, deriving the cells (and each build's tags/env/flags) from your release config, so the cells you analyze are exactly the cells you release. No file, no problem; it just falls back to the normal build. This isn't matrix-only either: every command uses it, with the single-build subjects (`prune`, `check`, `diff`, `go-version`, the TUI) building the way your *host* platform ships, and `bonsai matrix` expanding every cell.
+
+An explicit `matrix:` or `--platform` takes precedence, and you can turn the auto-detection off:
+
+```yaml
+analysis:
+  goreleaser: false             # ignore a .goreleaser.yaml that's present (default: use it).
+                                # when on, every build's goos x goarch (minus ignores, or its
+                                # targets) becomes a cell, carrying that build's tags/env/flags;
+                                # templated values like -X main.version={{.Version}} are dummied
+```
+
+### Persisted build settings
+
+If your build needs specific flags, tags, or env to resolve the same graph the real build does, persist them under `analysis.build`. They apply to every command, and the matrix's per-cell `tags` extend `build.tags`. (When a `.goreleaser.yaml` is in play, bonsai fills these in from your release config instead, and that wins over anything here; set `goreleaser: false` to use these by hand.)
+
+```yaml
+analysis:
+  build:
+    tags: [netgo]                 # extra build tags, merged into every cell
+    env:                          # env overrides (CGO_ENABLED affects which files compile)
+      CGO_ENABLED: "0"
+    args: "-trimpath"             # freeform go build flags (-gcflags, -buildmode, ...)
+                                  # spliced into `go build` only; bonsai's own
+                                  # -o/-ldflags=-dumpdep win, so -ldflags can't strip the build
+```
 
 ## Four ways to look at it
 

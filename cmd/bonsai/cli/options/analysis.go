@@ -1,12 +1,18 @@
 package options
 
 import (
+	"errors"
+	"runtime"
+
 	"github.com/anchore/fangs"
+
+	"github.com/wagoodman/bonsai/internal/bonsai"
 )
 
 var (
 	_ interface {
 		fangs.FlagAdder
+		fangs.PostLoader
 		fangs.FieldDescriber
 	} = (*Build)(nil)
 	_ interface {
@@ -19,6 +25,7 @@ var (
 		fangs.PostLoader
 		fangs.FieldDescriber
 	} = (*Prune)(nil)
+	_ fangs.FlagAdder = (*Matrix)(nil)
 )
 
 const defaultTop = 40
@@ -33,7 +40,80 @@ type Build struct {
 	Lock       []string `yaml:"lock" json:"lock" mapstructure:"lock"`
 	Unlock     []string `yaml:"unlock" json:"unlock" mapstructure:"unlock"`
 
+	// BuildSettings are persisted build defaults (tags, env, freeform args) applied to every
+	// build/list. Config-only (no flags); read from the analysis.build section.
+	BuildSettings bonsai.BuildSettings `yaml:"build" json:"build" mapstructure:"build"`
+	// Matrix declares the build cells for `bonsai matrix` (the analysis.matrix section). Other
+	// subjects ignore it.
+	Matrix []bonsai.Platform `yaml:"matrix" json:"matrix" mapstructure:"matrix"`
+	// Goreleaser controls whether bonsai derives the build (matrix + per-cell flags) from the
+	// project's .goreleaser.yaml. It is a tri-state pointer: nil (the default) and true both mean
+	// "use it if present, degrade silently if not"; false means "ignore any .goreleaser.yaml". A
+	// pointer (not a bool) so the on-by-default holds without a default-constructor on every config.
+	Goreleaser *bool `yaml:"goreleaser" json:"goreleaser" mapstructure:"goreleaser"`
+
+	// GoreleaserImport is the matrix resolved from .goreleaser.yaml at config-load time (PostLoad).
+	// The matrix subject consumes its cells; single-build subjects use the host build, which PostLoad
+	// also folds into BuildSettings. Not a config field. PostLoad owns it (see the nil reset there).
+	GoreleaserImport *bonsai.GoreleaserMatrix `yaml:"-" json:"-" mapstructure:"-"`
+
 	Dir string `yaml:"-" json:"-" mapstructure:"-"` // set from the positional directory argument
+}
+
+// PostLoad resolves goreleaser once, at config-load time, for every subject that embeds Build
+// (fangs calls it on the embedded struct directly). Unless explicitly disabled it reads the
+// project's .goreleaser.yaml and folds the host platform's build into BuildSettings + target, so
+// single-build subjects build the way the project ships; the full cell set is stashed for the
+// matrix subject. Missing file degrades silently; a malformed file is surfaced. Doing it here,
+// rather than in each command's RunE, is the single choke point.
+func (o *Build) PostLoad() error {
+	// fangs allocates this nil pointer field while walking the config (flag discovery), so a bare
+	// != nil check elsewhere is unreliable; PostLoad is the sole owner and resets it each load.
+	o.GoreleaserImport = nil
+
+	if o.Goreleaser != nil && !*o.Goreleaser {
+		return nil // explicitly disabled
+	}
+	if len(o.Matrix) > 0 {
+		return nil // an explicit analysis.matrix is manual mode; don't auto-pull goreleaser
+	}
+	dir := o.Dir
+	if dir == "" {
+		dir = "."
+	}
+	imp, err := bonsai.FromGoreleaser(dir)
+	if err != nil {
+		if errors.Is(err, bonsai.ErrNoGoreleaserConfig) {
+			return nil // no .goreleaser.yaml: degrade to the normal host build
+		}
+		return err // a present-but-broken goreleaser file is a real config error
+	}
+	o.GoreleaserImport = &imp
+	// goreleaser carries its own per-build flags/env, so it wins over any analysis.build settings.
+	o.BuildSettings, _ = imp.HostBuild(runtime.GOOS, runtime.GOARCH)
+	if o.Target == "" {
+		o.Target = imp.Target
+	}
+	return nil
+}
+
+// Config returns the engine Config fields shared by every report subject: the build/load inputs,
+// the class lists, and the persisted build settings. Command-specific fields (Why/Blame/
+// HideLocked, Platform) are set by the caller.
+func (o *Build) Config() bonsai.Config {
+	cfg := bonsai.Config{
+		Dir:        o.Dir,
+		Target:     o.Target,
+		Binary:     o.Binary,
+		Controlled: o.Controlled,
+		Locked:     o.Lock,
+		Unlock:     o.Unlock,
+		Build:      o.BuildSettings,
+	}
+	if o.GoreleaserImport != nil {
+		cfg.BuildLabel = "goreleaser" // the build flags/env were derived from .goreleaser.yaml
+	}
+	return cfg
 }
 
 func (o *Build) AddFlags(flags fangs.FlagSet) {
@@ -57,6 +137,33 @@ func (o *Build) DescribeFields(d fangs.FieldDescriptionSet) {
 		"(e.g. \"github.com/anchore/...\" to control a whole org transitively)")
 	d.Add(&o.Lock, "module patterns to lock so they are never suggested for pruning (exact, glob, or \"path/...\")")
 	d.Add(&o.Unlock, "locked modules to re-open as prune candidates (overrides the default lock on controlled modules)")
+	d.Add(&o.Goreleaser, "use a .goreleaser.yaml (its matrix + per-build tags/env/flags) when present; "+
+		"on by default, set false to ignore one")
+}
+
+// Matrix controls the `bonsai matrix` subject: run the analysis across a set of build cells and
+// report the worst-case go floor plus platform divergence. The cells come from the analysis.matrix
+// config section (via the embedded Build) or the ad-hoc --platform flags.
+type Matrix struct {
+	Build     `yaml:",inline" json:",inline" mapstructure:",squash"`
+	Platforms []string `yaml:"-" json:"-" mapstructure:"-"` // --platform: ad-hoc cells, replace the config matrix
+	Tags      []string `yaml:"-" json:"-" mapstructure:"-"` // --tags: applied to --platform cells
+	Size      bool     `yaml:"-" json:"-" mapstructure:"-"` // --size: build each cell, add size columns
+	Jobs      int      `yaml:"-" json:"-" mapstructure:"-"` // --jobs: concurrency
+	Wide      bool     `yaml:"-" json:"-" mapstructure:"-"` // --wide: full module-by-cell grid
+}
+
+func (o *Matrix) AddFlags(flags fangs.FlagSet) {
+	flags.StringArrayVarP(&o.Platforms, "platform", "",
+		"ad-hoc build cell \"os/arch\" or \"os/arch+tag,tag\" (repeatable; replaces the configured matrix)")
+	flags.StringArrayVarP(&o.Tags, "tags", "",
+		"build tags applied to every --platform cell (repeatable)")
+	flags.BoolVarP(&o.Size, "size", "",
+		"build each cell and report per-cell size (default: floor only, no builds)")
+	flags.IntVarP(&o.Jobs, "jobs", "j",
+		"max cells to analyze concurrently (default: min(cells, GOMAXPROCS))")
+	flags.BoolVarP(&o.Wide, "wide", "",
+		"print the full module-by-cell grid instead of just the divergence")
 }
 
 // Anatomy controls the default `bonsai` subject: the binary's size, attributed by content and

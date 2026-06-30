@@ -18,9 +18,11 @@ func MCP(id clio.Identification) *cobra.Command {
 		Long: "mcp starts a Model Context Protocol server over stdio, exposing bonsai as a yardstick for an AI " +
 			"agent operating in a codebase: bonsai_size_targets ranks prune candidates, bonsai_go_floor reports " +
 			"the minimum go directive and what pins it, bonsai_locate_cuts gives the exact edit sites and " +
-			"consequences for one module, bonsai_anatomy shows the size shape, and bonsai_measure cheaply " +
-			"re-checks size and go-version after an edit. Builds are cached and re-run automatically when source " +
-			"changes, so the edit loop just works.",
+			"consequences for one module, bonsai_anatomy shows the size shape, bonsai_measure cheaply " +
+			"re-checks size and go-version after an edit, bonsai_diff reports the size/floor delta against a git " +
+			"ref, bonsai_check evaluates the committed budget, and bonsai_matrix reports the worst-case floor " +
+			"across a build matrix. Builds are cached and re-run automatically when source changes, so the edit " +
+			"loop just works.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return mcp.Serve(cmd.Context(), id.Version)

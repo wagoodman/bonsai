@@ -72,11 +72,11 @@ func TestResolveCacheStoreLoad(t *testing.T) {
 
 func TestResolveCacheKeyGating(t *testing.T) {
 	// a non-git directory can't be cached.
-	_, ok := resolveCacheKey(t.TempDir(), "github.com/x/y")
+	_, ok := resolveCacheKey(t.TempDir(), "github.com/x/y", Platform{}, BuildSettings{})
 	assert.False(t, ok, "non-git dir is not cacheable")
 
 	// BONSAI_NO_CACHE disables caching even on a clean repo.
 	t.Setenv("BONSAI_NO_CACHE", "1")
-	_, ok = resolveCacheKey(".", "github.com/x/y")
+	_, ok = resolveCacheKey(".", "github.com/x/y", Platform{}, BuildSettings{})
 	assert.False(t, ok, "BONSAI_NO_CACHE disables the cache")
 }

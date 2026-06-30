@@ -55,17 +55,11 @@ func Prune(app clio.Application) *cobra.Command {
 }
 
 func runPrune(opts *pruneConfig) error {
-	resolved, err := bonsai.Resolve(bonsai.Config{
-		Dir:        opts.Dir,
-		Target:     opts.Target,
-		Binary:     opts.Binary,
-		Controlled: opts.Controlled,
-		Locked:     opts.Lock,
-		Unlock:     opts.Unlock,
-		Blame:      opts.Blame,
-		Why:        opts.Why,
-		HideLocked: opts.HideLocked,
-	})
+	cfg := opts.Config()
+	cfg.Blame = opts.Blame
+	cfg.Why = opts.Why
+	cfg.HideLocked = opts.HideLocked
+	resolved, err := bonsai.Resolve(cfg)
 	if err != nil {
 		return err
 	}

@@ -63,6 +63,7 @@ func New(id clio.Identification) clio.Application {
 	root.AddCommand(commands.GoVersion(app))
 	root.AddCommand(commands.Check(app))
 	root.AddCommand(commands.Diff(app))
+	root.AddCommand(commands.Matrix(app))
 	root.AddCommand(commands.Inspect(app))
 	root.AddCommand(commands.Config(app))
 	root.AddCommand(commands.Lock())
