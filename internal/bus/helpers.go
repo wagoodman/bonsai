@@ -11,7 +11,8 @@ import (
 // caller drives (SetCompleted / SetError). A total of -1 indicates indeterminate progress.
 func PublishTask(titles event.Title, context string, total int) *event.ManualStagedProgress {
 	prog := event.ManualStagedProgress{
-		Manual: *progress.NewManual(int64(total)),
+		AtomicStage: progress.NewAtomicStage(""),
+		Manual:      *progress.NewManual(int64(total)),
 	}
 
 	publish(partybus.Event{
@@ -24,7 +25,7 @@ func PublishTask(titles event.Title, context string, total int) *event.ManualSta
 			progress.Stager
 			progress.Progressable
 		}{
-			Stager:       &prog.Stage,
+			Stager:       prog.AtomicStage,
 			Progressable: &prog.Manual,
 		}),
 	})

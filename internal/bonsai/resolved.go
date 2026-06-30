@@ -1,6 +1,27 @@
 package bonsai
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+
+	"github.com/wagoodman/bonsai/internal/humanize"
+)
+
+// sizeDesc is the grey aux for a size attribution: accounted (~ release) bytes and module count.
+func sizeDesc(accounted uint64, nmods int) string {
+	return fmt.Sprintf("%s accounted across %d modules", humanize.Bytes(accounted), nmods)
+}
+
+// floorDesc is the grey aux for a go-floor result: the version and how many deps pin it.
+func floorDesc(f GoFloor) string {
+	if f.Version == "" {
+		return "no dep-imposed floor"
+	}
+	if n := len(f.Critical); n > 0 {
+		return fmt.Sprintf("go %s, %d pinning", f.Version, n)
+	}
+	return "go " + f.Version
+}
 
 // Resolved is a built-and-loaded analysis target ready to answer focused questions about the
 // binary. The expensive shared work — building the binary and resolving its import graph — is
@@ -107,6 +128,7 @@ func (r *Resolved) Size() SizeReport {
 		rep.Modules = append(rep.Modules, ms)
 	}
 	sort.Slice(rep.Modules, func(i, j int) bool { return rep.Modules[i].Size > rep.Modules[j].Size })
+	attrTask.SetStage(sizeDesc(rep.AccountedSize, len(rep.Modules)))
 	return rep
 }
 
@@ -160,6 +182,7 @@ func (r *Resolved) Prune() PruneReport {
 		rep.Modules = append(rep.Modules, ms)
 	}
 	sort.Slice(rep.Modules, func(i, j int) bool { return rep.Modules[i].Size > rep.Modules[j].Size })
+	attrTask.SetStage(sizeDesc(rep.AccountedSize, len(rep.Modules)))
 	attrTask.SetCompleted()
 
 	planTask := startTask("Compute prune plan", "Computing prune plan", "Prune plan computed")
@@ -167,6 +190,7 @@ func (r *Resolved) Prune() PruneReport {
 	if importers != nil {
 		attachPlanWhy(rep.Plan, importers, cls)
 	}
+	planTask.SetStage(fmt.Sprintf("%d steps", len(rep.Plan)))
 	planTask.SetCompleted()
 
 	if r.opts.blame {
@@ -192,7 +216,9 @@ func (r *Resolved) GoFloor() GoFloor {
 			inBuild[mod] = true
 		}
 	}
-	return g.goFloor(inBuild, cls)
+	f := g.goFloor(inBuild, cls)
+	floorTask.SetStage(floorDesc(f))
+	return f
 }
 
 // sizeAttribution holds per-module self-size totals along with the std-library, main-module,

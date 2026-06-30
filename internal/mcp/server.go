@@ -23,7 +23,7 @@ type Server struct {
 	cache *resolveCache
 }
 
-// NewServer assembles the bonsai MCP server with its five tools. version is stamped into the
+// NewServer assembles the bonsai MCP server with its analysis tools. version is stamped into the
 // server implementation info reported to clients.
 func NewServer(version string) *Server {
 	s := &Server{
@@ -69,6 +69,31 @@ func NewServer(version string) *Server {
 		Description: "Cheaply report just the binary size and the go-version floor, skipping the prune ranking. " +
 			"Use to confirm an edit had the intended effect in a tight loop.",
 	}, s.measure)
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "bonsai_diff",
+		Description: "Report the size and go-version-floor delta this branch makes against a git ref: the net binary " +
+			"size change, which modules were added/removed/changed (direct vs transitive), and any floor movement. " +
+			"Builds both the working tree and the merge-base baseline from source. Use to answer \"what did my change " +
+			"do to the binary?\" against a committed ref.",
+	}, s.diff)
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "bonsai_check",
+		Description: "Evaluate the project's committed size / go-version / deny-list budget (the config's check: block) " +
+			"against the built target and report pass/fail with the specific violations. Use to confirm a change still " +
+			"passes the CI gate. An absent budget reports configured=false, not a failure.",
+	}, s.check)
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "bonsai_matrix",
+		Description: "Run the analysis across a build matrix (GOOS/GOARCH/tags) and report the worst-case go floor — the " +
+			"MAX over every platform shipped, the number that actually constrains go.mod — plus which modules are " +
+			"universal versus platform-specific. Cells come from the platforms argument, else analysis.matrix, else " +
+			".goreleaser.yaml, else a default set. Floor-only by default (no builds, cross-compiles without a cgo " +
+			"toolchain); set size to build each cell for the exact post-DCE floor and per-cell size.",
+		OutputSchema: openObjectSchema, // CellResult.Size embeds ModuleSize.Why (recursive ImportNode)
+	}, s.matrix)
 
 	return s
 }

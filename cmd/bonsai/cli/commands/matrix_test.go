@@ -1,8 +1,6 @@
 package commands
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,28 +67,42 @@ func TestResolveCells(t *testing.T) {
 		assert.Equal(t, defaultMatrix(), cells)
 	})
 
-	t.Run("goreleaser is mutually exclusive with the matrix", func(t *testing.T) {
+	// goreleaser is resolved at config-load time (Build.PostLoad). When it's the only source,
+	// resolveCells turns its cells into the matrix and clears the global build settings.
+	t.Run("goreleaser import becomes the cells and clears build settings", func(t *testing.T) {
 		opts := &matrixConfig{}
-		opts.Goreleaser = true
-		opts.Build.Matrix = configMatrix
+		opts.GoreleaserImport = &bonsai.GoreleaserMatrix{
+			File:  ".goreleaser.yaml",
+			Cells: []bonsai.Platform{{GOOS: "linux", GOARCH: "amd64"}},
+		}
 		cfg := opts.Config()
-		_, err := resolveCells(opts, &cfg)
-		assert.ErrorContains(t, err, "mutually exclusive")
-	})
-
-	t.Run("goreleaser import fills the build target", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, ".goreleaser.yaml"),
-			[]byte("builds:\n  - dir: ./cmd/app\n    goos: [linux]\n    goarch: [amd64]\n"), 0o644))
-		opts := &matrixConfig{}
-		opts.Goreleaser = true
-		opts.Dir = dir
-		cfg := opts.Config()
+		cfg.Build = bonsai.BuildSettings{Tags: []string{"host"}} // PostLoad would have set this
 		cells, err := resolveCells(opts, &cfg)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"linux/amd64"}, labelsOfCells(cells))
-		assert.Equal(t, "./cmd/app", cfg.Target, "the target comes from the goreleaser build")
-		assert.Equal(t, bonsai.BuildSettings{}, cfg.Build, "global build settings don't apply to goreleaser cells")
+		assert.Equal(t, bonsai.BuildSettings{}, cfg.Build, "per-cell flags ride the cells, so global settings are cleared")
+	})
+
+	// goreleaser is on by default, so an explicit --platform must win over it, not error.
+	t.Run("--platform wins over an auto-detected goreleaser matrix", func(t *testing.T) {
+		opts := &matrixConfig{}
+		opts.GoreleaserImport = &bonsai.GoreleaserMatrix{Cells: []bonsai.Platform{{GOOS: "linux", GOARCH: "amd64"}}}
+		opts.Platforms = []string{"darwin/arm64"}
+		cfg := opts.Config()
+		cells, err := resolveCells(opts, &cfg)
+		require.NoError(t, err)
+		assert.Equal(t, []bonsai.Platform{{GOOS: "darwin", GOARCH: "arm64"}}, cells)
+	})
+
+	// a zero-cell import (fangs allocates the nil pointer while walking config) must not be treated
+	// as a real goreleaser matrix; fall through to the default set instead.
+	t.Run("empty goreleaser import falls through to default", func(t *testing.T) {
+		opts := &matrixConfig{}
+		opts.GoreleaserImport = &bonsai.GoreleaserMatrix{} // non-nil but zero cells
+		cfg := opts.Config()
+		cells, err := resolveCells(opts, &cfg)
+		require.NoError(t, err)
+		assert.Equal(t, defaultMatrix(), cells)
 	})
 }
 

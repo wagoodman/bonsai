@@ -56,6 +56,7 @@ type anatomyConfig struct {
 // the event-loop contending for it (the same reason the other interactive commands stay plain
 // cobra). PreRunE still runs clio's config setup; it constructs the UI but never starts it.
 func Root(app clio.Application, id clio.Identification) *cobra.Command {
+	opts := &exploreConfig{}
 	cmd := &cobra.Command{
 		Use:   "bonsai [DIR]",
 		Short: "interactively explore what happens to your binary size when you prune dependencies",
@@ -65,10 +66,21 @@ func Root(app clio.Application, id clio.Identification) *cobra.Command {
 			"breakdown, `bonsai prune` to rank which dependencies to cut, `bonsai go-version` for the lowest go " +
 			"directive you can declare, and `bonsai diff <ref>` for the size and go-floor delta your branch makes. " +
 			"Pass --binary to analyze a prebuilt binary instead.",
-		Args: cobra.MaximumNArgs(1),
+		// set Dir before config load so Build.PostLoad (goreleaser/analysis.build) sees the target dir.
+		Args: chainArgs(
+			cobra.MaximumNArgs(1),
+			func(_ *cobra.Command, args []string) error {
+				if len(args) == 1 {
+					opts.Dir = args[0]
+				}
+				return nil
+			},
+		),
 	}
-	app.SetupRootCommand(cmd)
-	wireExplore(cmd, id)
+	// register opts so clio loads the config (and runs PostLoad) in PreRunE; RunE is attached
+	// afterward in wireExplore so it stays unwrapped by the progress event-loop and the TUI owns stdin.
+	app.SetupRootCommand(cmd, opts)
+	wireExplore(cmd, opts, id)
 	return cmd
 }
 

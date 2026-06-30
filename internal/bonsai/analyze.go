@@ -8,6 +8,7 @@ import (
 
 	"github.com/wagoodman/bonsai/internal/bus"
 	"github.com/wagoodman/bonsai/internal/event"
+	"github.com/wagoodman/bonsai/internal/humanize"
 )
 
 // Config is the input to an analysis run.
@@ -31,6 +32,10 @@ type Config struct {
 	// args) applied to every build/list. Platform.Tags extend Build.Tags per cell. Zero value
 	// is the host toolchain with no extra flags.
 	Build BuildSettings
+
+	// BuildLabel names where the build settings came from (e.g. "goreleaser"), surfaced in the
+	// build progress line so it's clear the flags weren't bonsai's own defaults. Optional.
+	BuildLabel string
 
 	// Controlled lists the 1st-class modules whose source the user can edit — the modules
 	// whose imports are "cuttable". The main module is always controlled. Widening this
@@ -102,6 +107,12 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 		buildTask.SetError(err)
 		return nil, nil, nil, err
 	}
+	// grey aux: how it was built (GOOS/GOARCH + flags), prefixed with the source when known.
+	stage := arts.Command
+	if cfg.BuildLabel != "" {
+		stage = cfg.BuildLabel + ": " + stage
+	}
+	buildTask.SetStage(stage)
 	buildTask.SetCompleted()
 
 	loadTask := startTask("Load binary", "Loading binary", "Binary loaded")
@@ -111,6 +122,7 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 		cleanup()
 		return nil, nil, nil, err
 	}
+	loadTask.SetStage(loadDesc(arts.Binary, bin))
 	loadTask.SetCompleted()
 
 	graphTask := startTask("Resolve build graph", "Resolving build graph", "Build graph resolved")
@@ -125,6 +137,7 @@ func resolveFromSource(cfg Config) (*binaryInfo, *buildGraph, func(), error) {
 	if n, derr := applyReferenceEdges(g, arts.Dumpdep); derr != nil || n == 0 {
 		bus.Notify("note: could not use linker reachability (-dumpdep); falling back to source imports")
 	}
+	graphTask.SetStage(graphDesc(g))
 	graphTask.SetCompleted()
 
 	if cacheable {
@@ -185,6 +198,7 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 		loadTask.SetError(err)
 		return nil, nil, err
 	}
+	loadTask.SetStage(loadDesc(cfg.Binary, bin))
 	loadTask.SetCompleted()
 
 	target := cfg.Target
@@ -209,6 +223,7 @@ func resolvePrebuilt(cfg Config) (*binaryInfo, *buildGraph, error) {
 		graphTask.SetError(err)
 		return nil, nil, err
 	}
+	graphTask.SetStage(graphDesc(g))
 	graphTask.SetCompleted()
 
 	return bin, g, nil
@@ -223,6 +238,17 @@ func startTask(title, running, success string) *event.ManualStagedProgress {
 		WhileRunning: running,
 		OnSuccess:    success,
 	}, "", -1)
+}
+
+// loadDesc is the grey aux for a loaded binary: its path and on-disk size.
+func loadDesc(path string, bin *binaryInfo) string {
+	return fmt.Sprintf("%s (%s)", path, humanize.Bytes(bin.FileSize))
+}
+
+// graphDesc is the grey aux for a resolved build graph: package, module, and edge counts.
+func graphDesc(g *buildGraph) string {
+	pkgs, edges, mods := g.counts()
+	return fmt.Sprintf("%d packages, %d modules, %d edges", pkgs, mods, edges)
 }
 
 // findModuleDir walks up from the current directory looking for a go.mod whose module

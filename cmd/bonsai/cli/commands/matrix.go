@@ -97,32 +97,10 @@ func runMatrix(opts *matrixConfig) error {
 	return nil
 }
 
-// resolveCells picks the build cells for this run and may adjust cfg (goreleaser fills in the
-// build target). Precedence: goreleaser import (mutually exclusive with the rest), else --platform
-// flags, else the configured analysis.matrix, else the built-in default set.
+// resolveCells picks the build cells for this run. Explicit choices win over the auto-detected
+// goreleaser matrix, so precedence is: --platform flags, then the configured analysis.matrix, then
+// the goreleaser import (resolved at config-load time), then the built-in default set.
 func resolveCells(opts *matrixConfig, cfg *bonsai.Config) ([]bonsai.Platform, error) {
-	if opts.Goreleaser {
-		if len(opts.Platforms) > 0 || len(opts.Build.Matrix) > 0 {
-			return nil, fmt.Errorf("analysis.goreleaser is mutually exclusive with the matrix / --platform list")
-		}
-		imp, err := bonsai.FromGoreleaser(cfg.Dir)
-		if err != nil {
-			return nil, err
-		}
-		// goreleaser carries its build flags/env per-cell, so the global build settings (from
-		// analysis.build) don't apply; the target comes from the goreleaser build unless the user
-		// set one explicitly.
-		cfg.Build = bonsai.BuildSettings{}
-		if cfg.Target == "" {
-			cfg.Target = imp.Target
-		}
-		note := fmt.Sprintf("note: matrix derived from %s (%d cells)", imp.File, len(imp.Cells))
-		if imp.Builds > 1 {
-			note += fmt.Sprintf(" across %d builds", imp.Builds)
-		}
-		bus.Notify(note)
-		return imp.Cells, nil
-	}
 	if len(opts.Platforms) > 0 {
 		var cells []bonsai.Platform
 		for _, s := range opts.Platforms {
@@ -137,8 +115,20 @@ func resolveCells(opts *matrixConfig, cfg *bonsai.Config) ([]bonsai.Platform, er
 	if len(opts.Build.Matrix) > 0 {
 		return opts.Build.Matrix, nil
 	}
+	// len>0 guard, not just != nil: fangs allocates the nil import pointer while walking the config,
+	// so a zero-cell import can slip through even when goreleaser isn't in play.
+	if imp := opts.GoreleaserImport; imp != nil && len(imp.Cells) > 0 {
+		// goreleaser carries its build flags/env per-cell, so the global build settings don't apply.
+		cfg.Build = bonsai.BuildSettings{}
+		note := fmt.Sprintf("note: matrix derived from %s (%d cells)", imp.File, len(imp.Cells))
+		if imp.Builds > 1 {
+			note += fmt.Sprintf(" across %d builds", imp.Builds)
+		}
+		bus.Notify(note)
+		return imp.Cells, nil
+	}
 	bus.Notify("note: no matrix declared; using the default linux/amd64, darwin/arm64, windows/amd64 " +
-		"(set analysis.matrix in .bonsai.yaml, enable analysis.goreleaser, or pass --platform)")
+		"(set analysis.matrix in .bonsai.yaml, add a .goreleaser.yaml, or pass --platform)")
 	return defaultMatrix(), nil
 }
 

@@ -110,6 +110,29 @@ func TestGlTarget(t *testing.T) {
 	assert.Equal(t, "./cmd/app/main.go", glTarget("./cmd/app", "main.go"))  // ./ prefix preserved
 }
 
+func TestHostBuild(t *testing.T) {
+	// a config where each build (hence cell) carries distinct settings, so the host pick is visible.
+	g := GoreleaserMatrix{
+		Target: "./cmd/app",
+		Cells: []Platform{
+			{GOOS: "linux", GOARCH: "amd64", Tags: []string{"netgo"}, Env: map[string]string{"CGO_ENABLED": "0"}, Args: "-trimpath"},
+			{GOOS: "darwin", GOARCH: "arm64", Tags: []string{"cgo"}, Env: map[string]string{"CGO_ENABLED": "1"}},
+		},
+	}
+
+	t.Run("host match wins", func(t *testing.T) {
+		b, target := g.HostBuild("darwin", "arm64")
+		assert.Equal(t, "./cmd/app", target)
+		assert.Equal(t, BuildSettings{Tags: []string{"cgo"}, Env: map[string]string{"CGO_ENABLED": "1"}}, b)
+	})
+
+	t.Run("no host match falls back to the first cell", func(t *testing.T) {
+		b, _ := g.HostBuild("windows", "386")
+		assert.Equal(t, []string{"netgo"}, b.Tags)
+		assert.Equal(t, "-trimpath", b.Args)
+	})
+}
+
 func TestPlatformKey(t *testing.T) {
 	base := platformKey(Platform{GOOS: "linux", GOARCH: "amd64"})
 	// equal cells collide (so the union dedups them); a differing env makes a distinct key.

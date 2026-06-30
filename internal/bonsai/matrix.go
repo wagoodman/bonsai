@@ -6,6 +6,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/wagoodman/bonsai/internal/bus"
+	"github.com/wagoodman/bonsai/internal/event"
 )
 
 // Platform is one build cell: a GOOS/GOARCH target, build tags, and optional per-cell env/args
@@ -244,6 +247,15 @@ func Matrix(cfg Config, cells []Platform, withSize bool, jobs int) (MatrixReport
 		jobs = 1
 	}
 
+	// one progress line for the whole matrix: "N/total cells" as each finishes. Increment is
+	// atomic, so it's safe to drive from the worker goroutines. (The per-cell build sub-tasks the
+	// --size path emits from Resolve are separate; this is the matrix-level rollup.)
+	task := bus.PublishTask(event.Title{
+		Default:      "Analyze build matrix",
+		WhileRunning: "Analyzing build matrix",
+		OnSuccess:    "Analyzed build matrix",
+	}, "", len(cells))
+
 	data := make([]cellData, len(cells))
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
@@ -254,9 +266,14 @@ func Matrix(cfg Config, cells []Platform, withSize bool, jobs int) (MatrixReport
 			defer wg.Done()
 			defer func() { <-sem }()
 			data[i] = runCell(cfg, p, withSize)
+			task.Increment()
+			// atomic, so concurrent cells can drive it; shows the just-finished platform.
+			task.SetStage(fmt.Sprintf("%d/%d  %s", task.Current(), len(cells), p.Label()))
 		}(i, p)
 	}
 	wg.Wait()
+	task.SetStage(fmt.Sprintf("%d platforms", len(cells)))
+	task.SetCompleted()
 
 	return aggregateCells(data, withSize), nil
 }

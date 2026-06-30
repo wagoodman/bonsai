@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -56,6 +57,16 @@ func (c *resolveCache) with(cfg bonsai.Config, fn func(*bonsai.Resolved) error) 
 	return fn(resolved)
 }
 
+// serialize runs fn while holding the cache lock, without touching the warm cache. The
+// multi-build tools (matrix, diff) own their *Resolved instances, but still serialize against the
+// cached single-build queries so the server runs one build at a time — matching the local
+// single-agent model and keeping build progress legible.
+func (c *resolveCache) serialize(fn func() error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fn()
+}
+
 // resolveLocked returns a resolved target for cfg, rebuilding if the source has changed since the
 // last call (or this is the first call). The caller must hold c.mu.
 func (c *resolveCache) resolveLocked(cfg bonsai.Config) (*bonsai.Resolved, error) {
@@ -92,10 +103,31 @@ func (c *resolveCache) close() {
 func configKey(cfg bonsai.Config) string {
 	return strings.Join([]string{
 		cfg.Dir, cfg.Target, cfg.Binary,
+		cfg.Platform.Label(), // GOOS/GOARCH/tags of the build cell (host for the whole-binary tools)
+		cfg.BuildLabel,       // e.g. "goreleaser": flags came from .goreleaser.yaml
+		strings.Join(cfg.Build.Tags, ","), envMapKey(cfg.Build.Env), cfg.Build.Args,
 		strings.Join(cfg.Controlled, ","),
 		strings.Join(cfg.Locked, ","),
 		strings.Join(cfg.Unlock, ","),
 	}, "\x00")
+}
+
+// envMapKey renders a build-env override map as a stable, order-independent string for the cache
+// key (Go map iteration order is random).
+func envMapKey(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+env[k])
+	}
+	return strings.Join(parts, " ")
 }
 
 // sourceFingerprint hashes the contents of every Go source and module file under the target

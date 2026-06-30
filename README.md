@@ -105,18 +105,21 @@ analysis:
     - { goos: linux,   goarch: amd64, tags: [netgo] }
 ```
 
-Already ship with goreleaser? Flip one switch and bonsai derives the whole matrix (and each build's tags/env/flags) from your `.goreleaser.yaml` instead, so the cells you analyze are exactly the cells you release. Mutually exclusive with `matrix:` / `--platform`:
+Already ship with goreleaser? Then you don't declare a matrix at all: if there's a `.goreleaser.yaml`, bonsai uses it automatically, deriving the cells (and each build's tags/env/flags) from your release config, so the cells you analyze are exactly the cells you release. No file, no problem; it just falls back to the normal build. This isn't matrix-only either: every command uses it, with the single-build subjects (`prune`, `check`, `diff`, `go-version`, the TUI) building the way your *host* platform ships, and `bonsai matrix` expanding every cell.
+
+An explicit `matrix:` or `--platform` takes precedence, and you can turn the auto-detection off:
 
 ```yaml
 analysis:
-  goreleaser: true              # read .goreleaser.yaml: every build's goos x goarch (minus
-                                # ignores, or its targets), with that build's tags/env/flags.
+  goreleaser: false             # ignore a .goreleaser.yaml that's present (default: use it).
+                                # when on, every build's goos x goarch (minus ignores, or its
+                                # targets) becomes a cell, carrying that build's tags/env/flags;
                                 # templated values like -X main.version={{.Version}} are dummied
 ```
 
 ### Persisted build settings
 
-If your build needs specific flags, tags, or env to resolve the same graph the real build does, persist them under `analysis.build`. They apply to every command, and the matrix's per-cell `tags` extend `build.tags`:
+If your build needs specific flags, tags, or env to resolve the same graph the real build does, persist them under `analysis.build`. They apply to every command, and the matrix's per-cell `tags` extend `build.tags`. (When a `.goreleaser.yaml` is in play, bonsai fills these in from your release config instead, and that wins over anything here; set `goreleaser: false` to use these by hand.)
 
 ```yaml
 analysis:

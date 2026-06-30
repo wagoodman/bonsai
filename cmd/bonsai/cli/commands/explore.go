@@ -11,51 +11,41 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wagoodman/bonsai/cmd/bonsai/cli/internal/prunetui"
+	"github.com/wagoodman/bonsai/cmd/bonsai/cli/options"
 	"github.com/wagoodman/bonsai/cmd/bonsai/internal/ui"
 	"github.com/wagoodman/bonsai/internal/bonsai"
 	"github.com/wagoodman/bonsai/internal/configedit"
 )
 
+// exploreConfig is the root/explorer's loaded configuration: just the shared build inputs, so the
+// interactive TUI honors analysis.build and analysis.goreleaser (resolved in Build.PostLoad at
+// config-load time) the same as every other subject. It carries no output Format — the explorer
+// is interactive, not a report.
+type exploreConfig struct {
+	options.Build `yaml:"analysis" json:"analysis" mapstructure:"analysis"`
+}
+
 // wireExplore attaches the interactive prune explorer to cmd: a what-if TUI where every
 // dependency candidate starts selected for removal and you deselect what you need. It is the
-// root command's action (running `bonsai` with no subcommand). The RunE is left unwrapped by
-// clio's event-loop so the full-screen TUI owns stdin; the build/analysis runs first under the
-// same task-progress UI the static reports show (via ui.RunWithProgress), which tears down
-// before the TUI starts. See Root for why this isn't wired as a normal clio RunE.
-func wireExplore(cmd *cobra.Command, id clio.Identification) {
+// root command's action (running `bonsai` with no subcommand). The RunE is attached here, after
+// clio's SetupRootCommand, so it stays unwrapped by the progress event-loop and the full-screen
+// TUI owns stdin — but config (including PostLoad) still loads in PreRunE. The build/analysis runs
+// first under the same task-progress UI the static reports show (via ui.RunWithProgress), which
+// tears down before the TUI starts. See Root for the wiring.
+func wireExplore(cmd *cobra.Command, opts *exploreConfig, id clio.Identification) {
 	// the TUI shows "bonsai · <version>" in its status bar; hide the unset build-time default
 	// ("[not provided]" from main.go) that ldflags overrides on real releases.
 	version := id.Version
 	if version == "[not provided]" {
 		version = ""
 	}
-	var (
-		target     string
-		binary     string
-		controlled []string
-		locked     []string
-		unlock     []string
-	)
-	cmd.RunE = func(c *cobra.Command, args []string) error {
-		dir := "."
-		if len(args) == 1 {
-			dir = args[0]
+	cmd.RunE = func(c *cobra.Command, _ []string) error {
+		cfg := opts.Config() // analysis.build + goreleaser already resolved by Build.PostLoad
+		if cfg.Dir == "" {
+			cfg.Dir = "."
 		}
-		return runExplore(c, bonsai.Config{
-			Dir:        dir,
-			Target:     target,
-			Binary:     binary,
-			Controlled: controlled,
-			Locked:     locked,
-			Unlock:     unlock,
-		}, version)
+		return runExplore(c, cfg, version)
 	}
-	flags := cmd.Flags()
-	flags.StringVar(&target, "target", "", "entrypoint package to build and analyze")
-	flags.StringVarP(&binary, "binary", "b", "", "explore a prebuilt binary instead of building from source")
-	flags.StringArrayVarP(&controlled, "controlled", "C", nil, "1st-class module patterns whose imports are cuttable")
-	flags.StringArrayVarP(&locked, "lock", "l", nil, "module patterns to lock (never offered for pruning)")
-	flags.StringArrayVar(&unlock, "unlock", nil, "locked modules to re-open as prune candidates")
 }
 
 func runExplore(cmd *cobra.Command, cfg bonsai.Config, version string) error {

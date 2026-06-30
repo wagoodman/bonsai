@@ -1,6 +1,7 @@
 package bonsai
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -11,6 +12,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrNoGoreleaserConfig is returned when no .goreleaser.yaml/.yml exists in the directory, so
+// callers can distinguish "no goreleaser here" (degrade to a normal build) from a present-but-
+// broken config (a real error).
+var ErrNoGoreleaserConfig = errors.New("no .goreleaser.yaml or .goreleaser.yml")
 
 // goreleaser support: derive the build matrix (and per-cell tags/env/flags) from a project's
 // .goreleaser.yaml instead of hand-declaring it. Each goreleaser `builds` entry expands to its
@@ -122,6 +128,22 @@ func FromGoreleaser(dir string) (GoreleaserMatrix, error) {
 	return GoreleaserMatrix{Cells: cells, Target: target, Builds: len(cfg.Builds), File: file}, nil
 }
 
+// HostBuild selects the build settings for a single (non-matrix) host build from the imported
+// matrix: the tags/env/flags of the cell matching goos/goarch — a build's flags are uniform across
+// its GOOS×GOARCH cells, so this is that build's settings — falling back to the first cell when
+// goreleaser doesn't target this host. Returns those settings plus the derived build target, so the
+// single-build subjects (check/diff/anatomy/...) build the way the project ships.
+func (g GoreleaserMatrix) HostBuild(goos, goarch string) (BuildSettings, string) {
+	pick := g.Cells[0] // FromGoreleaser guarantees at least one cell
+	for _, c := range g.Cells {
+		if c.GOOS == goos && c.GOARCH == goarch {
+			pick = c
+			break
+		}
+	}
+	return BuildSettings{Tags: pick.Tags, Env: pick.Env, Args: pick.Args}, g.Target
+}
+
 // readGoreleaser finds and reads the goreleaser config in dir, trying the standard filenames.
 func readGoreleaser(dir string) (string, []byte, error) {
 	for _, name := range []string{".goreleaser.yaml", ".goreleaser.yml"} {
@@ -130,7 +152,7 @@ func readGoreleaser(dir string) (string, []byte, error) {
 			return p, data, nil
 		}
 	}
-	return "", nil, fmt.Errorf("no .goreleaser.yaml or .goreleaser.yml in %s", dir)
+	return "", nil, fmt.Errorf("%w in %s", ErrNoGoreleaserConfig, dir)
 }
 
 // cellsForBuild expands one goreleaser build into its platform cells, attaching the build's

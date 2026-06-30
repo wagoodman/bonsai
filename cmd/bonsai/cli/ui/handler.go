@@ -63,6 +63,11 @@ func (m *Handler) handleTask(e partybus.Event) ([]tea.Model, tea.Cmd) {
 	}, cmd.Context), nil
 }
 
+// titleWidth is the fixed column the grey aux text starts after. Tuned just past bonsai's
+// longest aux-bearing title ("Go version floor computed", 25) so the aux sits close to the
+// title instead of the taskprogress default of 40. Longer titles without aux simply overflow it.
+const titleWidth = 27
+
 func (m *Handler) handleStagedProgressable(prog progress.StagedProgressable, title taskprogress.Title, context ...string) []tea.Model {
 	tsk := taskprogress.New(
 		m.state.Running,
@@ -70,6 +75,7 @@ func (m *Handler) handleStagedProgressable(prog progress.StagedProgressable, tit
 	)
 	tsk.HideProgressOnSuccess = true
 	tsk.TitleOptions = title
+	tsk.TitleWidth = titleWidth
 	tsk.Context = context
 	tsk.WindowSize = m.state.WindowSize
 

@@ -45,6 +45,21 @@ type buildGraph struct {
 	controlled map[string]bool
 }
 
+// counts returns the graph's size for the progress UI: known packages (nodes), import edges, and
+// non-std modules.
+func (g *buildGraph) counts() (pkgs, edges, mods int) {
+	pkgs = len(g.packages)
+	for _, p := range g.packages {
+		edges += len(p.Imports)
+	}
+	for m := range g.allModules {
+		if m != "" {
+			mods++
+		}
+	}
+	return pkgs, edges, mods
+}
+
 // isControlled reports whether m is a 1st-class module (editable source). The main module
 // is always controlled. Before classify() runs, controlled is nil and only the main module
 // qualifies, which preserves the original "first-party = main module only" cut model.
