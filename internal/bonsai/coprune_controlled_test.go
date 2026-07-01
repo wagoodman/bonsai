@@ -56,7 +56,7 @@ func TestRecommendationsExcludeControlledModules(t *testing.T) {
 			assert.NotContains(t, c.targets(), "github.com/org/bubbly", "controlled module is not a target")
 
 			base := g.reachable(nil)
-			dom := g.buildDomModel(spec.size, base, c)
+			dom := g.buildDomModel(spec.size, base, g.controlledGateway(c))
 			blockers := g.blockerSets(c)
 			prunes := g.pruneResults(spec.size, base, c, dom, blockers)
 
@@ -102,7 +102,7 @@ func TestRecommendationsCoPruneWhenNotControlled(t *testing.T) {
 	c := classify(g, newPatternMatcher(nil), newPatternMatcher(nil), newPatternMatcher(nil))
 
 	base := g.reachable(nil)
-	dom := g.buildDomModel(spec.size, base, c)
+	dom := g.buildDomModel(spec.size, base, g.controlledGateway(c))
 	blockers := g.blockerSets(c)
 	prunes := g.pruneResults(spec.size, base, c, dom, blockers)
 

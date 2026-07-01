@@ -78,6 +78,42 @@ func (g *buildGraph) blockerSets(c *classification) map[string][]string {
 	return blockers
 }
 
+// lockedImporters maps each prune target to the locked, uncontrolled modules that directly
+// import it — the deps holding the target (and its prize) in the build against a controlled
+// prune, so the only way to claim the prize is to replace, patch, or upstream one of them.
+// Controlled modules are excluded: their imports are cuttable, not pins. ponytail: direct
+// importers only; a target pinned purely transitively through a locked dep gets an empty list
+// (its effort still reads pinnedByDep from the prize/EXCL gap).
+func (g *buildGraph) lockedImporters(c *classification) map[string][]string {
+	seen := map[string]map[string]bool{}
+	for ip, pkg := range g.packages {
+		src := g.moduleOfPkg[ip]
+		if src == "" || g.isControlled(src) || !c.isLocked(src) {
+			continue
+		}
+		for _, imp := range pkg.Imports {
+			dst := g.moduleOfPkg[imp]
+			if dst == "" || dst == src || !c.isTarget(dst) {
+				continue
+			}
+			if seen[dst] == nil {
+				seen[dst] = map[string]bool{}
+			}
+			seen[dst][src] = true
+		}
+	}
+	out := make(map[string][]string, len(seen))
+	for target, srcs := range seen {
+		list := make([]string, 0, len(srcs))
+		for s := range srcs {
+			list = append(list, s)
+		}
+		sort.Strings(list)
+		out[target] = list
+	}
+	return out
+}
+
 // pruneResults builds, for every prune target, the realistic savings breakdown: exclusive
 // bytes (from the dominator tree — what pruning this target alone frees), the full subtree
 // potential, and the shared remainder enumerated by holder. blockers (from blockerSets)
@@ -86,6 +122,7 @@ func (g *buildGraph) blockerSets(c *classification) map[string][]string {
 //nolint:funlen,gocognit // per-target savings breakdown built in one pass over the dominator tree
 func (g *buildGraph) pruneResults(selfSize map[string]uint64, base map[string]bool, c *classification,
 	dom *domModel, blockers map[string][]string) map[string]*PruneResult {
+	pinnedBy := g.lockedImporters(c)
 	// total reachable package count per module, to decide which modules are fully freed.
 	totalByModule := map[string]int{}
 	for ip := range base {
@@ -106,6 +143,18 @@ func (g *buildGraph) pruneResults(selfSize map[string]uint64, base map[string]bo
 	out := map[string]*PruneResult{}
 	for _, target := range c.targets() {
 		res := &PruneResult{Module: target, FreedBytes: dom.exclusiveBytes(target)}
+
+		// prize: the full-graph retained size and where it concentrates, plus the locked deps
+		// pinning it against a controlled cut. This is the axis that surfaces weight FreedBytes
+		// zeroes when an uncontrolled dep holds the module (see design-latent-wins.md). Built per
+		// target with a module-only gateway so a co-holder target cannot steal its downstream
+		// weight (which would push prize below exclusive).
+		prizeDom := g.buildDomModel(selfSize, base, g.moduleGateway(target))
+		res.PrizeBytes = prizeDom.exclusiveBytes(target)
+		res.PinnedBy = pinnedBy[target]
+		for _, ew := range prizeDom.entryWeights(target) {
+			res.PrizeByEntryPackage = append(res.PrizeByEntryPackage, EntryPackage{ImportPath: ew.pkg, RetainedBytes: ew.retained})
+		}
 
 		// exclusive set: packages that actually leave when this target is pruned.
 		exclusive := map[string]bool{}

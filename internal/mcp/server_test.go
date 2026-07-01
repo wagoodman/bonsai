@@ -67,11 +67,12 @@ func TestSizeTargetsEndToEnd(t *testing.T) {
 	require.NotEmpty(t, out.Candidates, "expected prune candidates for the bonsai module")
 	assert.NotZero(t, out.AccountedSize)
 
-	// candidates are ranked by freed bytes descending, and each has a verdict.
+	// candidates are ranked by prize descending, and each has an effort label.
 	for i, c := range out.Candidates {
-		assert.NotEmpty(t, c.Verdict, "candidate %s missing verdict", c.Module)
+		assert.NotEmpty(t, c.Effort, "candidate %s missing effort", c.Module)
+		assert.GreaterOrEqual(t, c.PrizeBytes, c.FreedBytes, "prize must be >= freed for %s", c.Module)
 		if i > 0 {
-			assert.GreaterOrEqual(t, out.Candidates[i-1].FreedBytes, c.FreedBytes, "candidates not sorted by freed bytes")
+			assert.GreaterOrEqual(t, out.Candidates[i-1].PrizeBytes, c.PrizeBytes, "candidates not sorted by prize")
 		}
 	}
 }

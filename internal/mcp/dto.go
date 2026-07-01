@@ -2,28 +2,32 @@ package mcp
 
 import "github.com/wagoodman/bonsai/internal/bonsai"
 
-// SizeTargetsOutput is the size_targets tool result: ranked prune candidates (each with the
-// benefit bytes and the cost signals, plus an effort verdict) and the greedy prune plan.
+// SizeTargetsOutput is the size_targets tool result: prune candidates ranked by prize (bytes at
+// stake, the two-axis prize-vs-effort frame) and the greedy prune plan.
 type SizeTargetsOutput struct {
 	AccountedSize uint64                 `json:"accountedSize" jsonschema:"the binary size the savings project down from"`
 	MainModule    string                 `json:"mainModule"`
-	Candidates    []Candidate            `json:"candidates" jsonschema:"prune candidates, ranked by bytes freed (descending)"`
+	Candidates    []Candidate            `json:"candidates" jsonschema:"prune candidates, ranked by prize (bytes at stake, descending)"`
 	Plan          []bonsai.PrunePlanStep `json:"prunePlan,omitempty" jsonschema:"a greedy order to cut the candidates, by marginal savings"`
 }
 
-// Candidate is one prune candidate with both axes an agent needs to rank "least work, biggest
-// win": the benefit (freed/potential bytes) and the cost (coupling counts), plus a coarse
-// effort verdict. Finer rewrite scope (per-entry-package bytes, edit sites) comes from
+// Candidate is one prune candidate on two axes: the prize (bytes at stake if the module left the
+// binary, across the controlled boundary) and the effort to realize it (freed-alone bytes,
+// coupling, and what blocks a clean cut). A big prize with a 0 freedBytes is not a non-candidate:
+// it is weight pinned by an uncontrolled dep (see pinnedBy). Finer rewrite scope comes from
 // locate_cuts.
 type Candidate struct {
-	Module            string                `json:"module"`
-	Class             string                `json:"class"`
-	FreedBytes        uint64                `json:"freedBytes" jsonschema:"bytes freed by pruning this module alone (exclusive, retained size)"`
-	PotentialBytes    uint64                `json:"potentialBytes" jsonschema:"freeable bytes in its subtree if co-holders are pruned too"`
-	SharedWith        []bonsai.SharedHolder `json:"sharedWith,omitempty" jsonschema:"weight not freed alone, and the other targets that hold it"`
-	ImportingPackages int                   `json:"importingPackages" jsonschema:"distinct first-party packages that import it (cost signal)"`
-	ImportSites       int                   `json:"importSites" jsonschema:"total first-party import statements referencing it (cost signal)"`
-	Verdict           string                `json:"verdict" jsonschema:"coarse effort label: quickWin, moderate, highEffort, or sharedOnly"`
+	Module              string                `json:"module"`
+	Class               string                `json:"class"`
+	PrizeBytes          uint64                `json:"prizeBytes" jsonschema:"bytes at stake if this module vanished (full-graph retained size, across the controlled boundary); the ranking key, always >= freedBytes"`
+	FreedBytes          uint64                `json:"freedBytes" jsonschema:"the unilateral slice: bytes freed by pruning this module from your own code alone (exclusive)"`
+	PotentialBytes      uint64                `json:"potentialBytes" jsonschema:"freeable bytes in its subtree if co-holder targets are pruned too"`
+	SharedWith          []bonsai.SharedHolder `json:"sharedWith,omitempty" jsonschema:"weight not freed alone, and the other targets that hold it"`
+	PinnedBy            []string              `json:"pinnedBy,omitempty" jsonschema:"locked, uncontrolled deps importing this that hold the prize against a controlled cut; the modules to replace, patch, or upstream to claim it"`
+	PrizeByEntryPackage []bonsai.EntryPackage `json:"prizeByEntryPackage,omitempty" jsonschema:"where the prize concentrates across entry packages; turns the ceiling into the achievable slice (e.g. weight behind one getter you could strip)"`
+	ImportingPackages   int                   `json:"importingPackages" jsonschema:"distinct first-party packages that import it (cost signal)"`
+	ImportSites         int                   `json:"importSites" jsonschema:"total first-party import statements referencing it (cost signal)"`
+	Effort              string                `json:"effort" jsonschema:"how to realize the prize: quickWin (cut your imports), coordinated (co-prune other targets), pinnedByDep (replace/patch a locked dep in pinnedBy), or core (too wired in to cut)"`
 }
 
 // GoFloorOutput is the go_floor tool result: the dep-imposed minimum Go version, what pins it,

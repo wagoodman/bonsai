@@ -36,7 +36,7 @@ func TestEntryWeightsMultiEntry(t *testing.T) {
 	g := spec.build()
 	c := classify(g, newPatternMatcher(nil), newPatternMatcher(nil), newPatternMatcher(nil))
 	base := g.reachable(nil)
-	dom := g.buildDomModel(spec.size, base, c)
+	dom := g.buildDomModel(spec.size, base, g.controlledGateway(c))
 
 	got := dom.entryWeights("lib")
 	want := []entryWeight{
@@ -63,7 +63,7 @@ func TestEntryWeightsPartitionRandom(t *testing.T) {
 			g, sizes, controlled, locked := randomGraph(seed)
 			c := classify(g, controlled, locked, newPatternMatcher(nil))
 			base := g.reachable(nil)
-			dom := g.buildDomModel(sizes, base, c)
+			dom := g.buildDomModel(sizes, base, g.controlledGateway(c))
 
 			for _, target := range c.targets() {
 				var sum uint64

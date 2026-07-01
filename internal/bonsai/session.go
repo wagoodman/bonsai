@@ -28,10 +28,12 @@ type Session struct {
 	importees map[string]map[string]bool // forward module graph: what m imports (go mod graph)
 
 	// mutable classification view, re-derived by Reclassify
-	inputs ClassInputs
-	cls    *classification
-	ri     *reachIndex
-	dom    *domModel
+	inputs   ClassInputs
+	cls      *classification
+	ri       *reachIndex
+	dom      *domModel
+	prize    map[string]uint64   // per-target full-graph retained size (bytes at stake), the prize axis
+	pinnedBy map[string][]string // per-target locked, uncontrolled deps holding the prize against a cut
 }
 
 // ClassInputs are the pattern lists that drive classification. Mutate and pass to Reclassify
@@ -83,7 +85,16 @@ func (s *Session) Reclassify(in ClassInputs) {
 	s.inputs = in
 	s.cls = classify(s.g, newPatternMatcher(in.Controlled), newPatternMatcher(in.Locked), newPatternMatcher(in.Unlock))
 	s.ri = s.g.newReachIndex(s.selfSize, s.base, s.cls)
-	s.dom = s.g.buildDomModel(s.selfSize, s.base, s.cls)
+	s.dom = s.g.buildDomModel(s.selfSize, s.base, s.g.controlledGateway(s.cls))
+
+	// prize axis: full-graph retained size per target, plus the locked deps pinning it. One
+	// module-only gateway pass per target (see moduleGateway). ponytail: T dominator passes on
+	// each reclassify; fine at bonsai's scale, cache/lazy per-row if a huge module set ever drags.
+	s.pinnedBy = s.g.lockedImporters(s.cls)
+	s.prize = map[string]uint64{}
+	for _, t := range s.cls.targets() {
+		s.prize[t] = s.g.buildDomModel(s.selfSize, s.base, s.g.moduleGateway(t)).exclusiveBytes(t)
+	}
 }
 
 // Inputs returns the current classification inputs (so the TUI can mutate and Reclassify).
@@ -105,18 +116,20 @@ func (s *Session) BinarySize() uint64 { return s.bin.FileSize }
 // (Exclusive), and removal-effort signals (Coupling, Importers).
 type Module struct {
 	Module     string
-	Class      string // "main", "1st", "2nd", "3rd"
-	Locked     bool   // never proposed for pruning; not selectable
-	Controlled bool   // 1st-class (yours) — shown in gold even when locked
-	Target     bool   // a selectable prune candidate
-	Size       uint64 // attributed bytes in the binary
-	Exclusive  uint64 // bytes freed by pruning this alone (dominator retained size)
-	GoVersion  string // the module's declared `go` directive (go.mod), if any
+	Class      string   // "main", "1st", "2nd", "3rd"
+	Locked     bool     // never proposed for pruning; not selectable
+	Controlled bool     // 1st-class (yours) — shown in gold even when locked
+	Target     bool     // a selectable prune candidate
+	Size       uint64   // attributed bytes in the binary
+	Exclusive  uint64   // bytes freed by pruning this alone (dominator retained size)
+	Prize      uint64   // bytes at stake if the module left the binary (full-graph retained, across the controlled boundary)
+	PinnedBy   []string // locked, uncontrolled deps holding the prize against a cut (when prize > exclusive)
+	GoVersion  string   // the module's declared `go` directive (go.mod), if any
 	Coupling   Coupling
 	Importers  int // distinct modules that import it (fan-in)
 }
 
-// Modules returns every non-main module in the build, sorted by prune value (Exclusive) then
+// Modules returns every non-main module in the build, sorted by prize (bytes at stake) then
 // size, so the list opens on the highest-leverage candidates while still showing locked and
 // 1st-class modules (for the explorer to grey/gold).
 func (s *Session) Modules() []Module {
@@ -133,6 +146,8 @@ func (s *Session) Modules() []Module {
 			Target:     s.cls.isTarget(mod),
 			Size:       sz,
 			Exclusive:  s.dom.exclusiveBytes(mod),
+			Prize:      s.prize[mod],
+			PinnedBy:   s.pinnedBy[mod],
 			GoVersion:  s.g.goVersionOf(mod),
 			Importers:  len(s.importers[mod]),
 		}
@@ -141,9 +156,11 @@ func (s *Session) Modules() []Module {
 		}
 		out = append(out, m)
 	}
+	// open on the highest prize (bytes at stake), so a big win pinned by a locked dep surfaces
+	// at the top instead of sinking to 0 the way exclusive savings bury it.
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Exclusive != out[j].Exclusive {
-			return out[i].Exclusive > out[j].Exclusive
+		if out[i].Prize != out[j].Prize {
+			return out[i].Prize > out[j].Prize
 		}
 		if out[i].Size != out[j].Size {
 			return out[i].Size > out[j].Size
@@ -223,6 +240,8 @@ type Detail struct {
 	Size       uint64
 	Own        uint64        // the module's own code among its exclusive savings
 	Exclusive  uint64        // freed by pruning it alone (net: shared deps don't count)
+	Prize      uint64        // bytes at stake if the module left the binary (full-graph retained)
+	PinnedBy   []string      // locked, uncontrolled deps holding the prize against a cut
 	PullsIn    uint64        // gross weight of everything it reaches (incl. shared deps that stay)
 	GoVersion  string        // the module's declared `go` directive (go.mod), if any
 	DragOut    []FreedModule // other modules freed with it (its exclusive subtree), largest first
@@ -243,6 +262,8 @@ func (s *Session) Detail(module string) Detail {
 		Target:     s.cls.isTarget(module),
 		Size:       s.moduleSz[module],
 		Exclusive:  s.dom.exclusiveBytes(module),
+		Prize:      s.prize[module],
+		PinnedBy:   s.pinnedBy[module],
 		GoVersion:  s.g.goVersionOf(module),
 		Importers:  len(s.importers[module]),
 		// the explorer's panes scroll, so build the full trees (not the report's bounded view);

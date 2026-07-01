@@ -44,6 +44,7 @@ tasks:
     desc: Run all levels of test
     cmds:
       - task: unit
+      - task: integration
 
   ## Bootstrap tasks #################################
 
@@ -154,6 +155,12 @@ tasks:
       - "go test -coverprofile {{ .TMP_DIR }}/unit-coverage-details.txt {{ .TEST_PKGS }}"
       - cmd: ".github/scripts/coverage.py {{ .COVERAGE_THRESHOLD }} {{ .TMP_DIR }}/unit-coverage-details.txt"
         silent: true
+
+  integration:
+    desc: Run integration tests (real builds end-to-end against fixture modules)
+    deps: [tmpdir]
+    cmds:
+      - "go test ./test/integration/..."
 
   ## Build-related tasks #################################
 

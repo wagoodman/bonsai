@@ -42,9 +42,11 @@ type domModel struct {
 
 // buildDomModel constructs the gateway-augmented flow graph over base (the reachable
 // package set), computes its dominator tree, and rolls up retained sizes. selfSize maps
-// import paths to attributed bytes; c says which modules are controlled and which are
-// prune targets.
-func (g *buildGraph) buildDomModel(selfSize map[string]uint64, base map[string]bool, c *classification) *domModel { //nolint:funlen // builds the dominator-tree retained-size model in one cohesive pass
+// import paths to attributed bytes. routeVia decides which edges are rerouted through the
+// destination module's synthetic gateway: the controlled-edge rule yields exclusive prune
+// savings (EXCL), the module-only rule yields that one module's full-graph prize (see
+// controlledGateway / moduleGateway).
+func (g *buildGraph) buildDomModel(selfSize map[string]uint64, base map[string]bool, routeVia func(srcMod, dstMod string) bool) *domModel { //nolint:funlen // builds the dominator-tree retained-size model in one cohesive pass
 	const superRoot = 0
 
 	m := &domModel{
@@ -98,22 +100,21 @@ func (g *buildGraph) buildDomModel(selfSize map[string]uint64, base map[string]b
 		}
 	}
 
-	// rewrite every reachable import edge: cuttable edges into a prune target are rerouted
-	// through that target's gateway; everything else stays a direct edge.
+	// rewrite every reachable import edge: edges routeVia selects are rerouted through the
+	// destination module's gateway; everything else stays a direct edge.
 	for ip := range base {
 		pkg := g.packages[ip]
 		if pkg == nil {
 			continue
 		}
 		srcMod := g.moduleOfPkg[ip]
-		srcControlled := g.isControlled(srcMod)
 		u := idOf(ip)
 		for _, imp := range pkg.Imports {
 			if !base[imp] {
 				continue
 			}
 			dstMod := g.moduleOfPkg[imp]
-			if srcControlled && c.isTarget(dstMod) {
+			if routeVia(srcMod, dstMod) {
 				gw := gatewayOf(dstMod)
 				addEdge(u, gw)
 				addEdge(gw, idOf(imp))
@@ -137,6 +138,24 @@ func (g *buildGraph) buildDomModel(selfSize map[string]uint64, base map[string]b
 	m.idom = dominators(n, superRoot, adj)
 	m.buildChildrenAndRetained(superRoot)
 	return m
+}
+
+// controlledGateway is the exclusive-prune edge rule: reroute an edge through the destination's
+// gateway when controlled code imports a prune target — the cuttable edges. retained[gateway] is
+// then the bytes freed by cutting your own imports of that target (EXCL).
+func (g *buildGraph) controlledGateway(c *classification) func(srcMod, dstMod string) bool {
+	return func(srcMod, dstMod string) bool { return g.isControlled(srcMod) && c.isTarget(dstMod) }
+}
+
+// moduleGateway is the prize edge rule for ONE module: reroute every edge entering target from
+// outside it, controlled or not. retained[gateway] is then target's full-graph retained size —
+// the bytes that would leave if the module vanished however you achieve it (prune, replace,
+// patch, upstream), including weight pinned by uncontrolled deps that the controlled-only rule
+// hides at zero. It must be built per module, not for all targets at once: gatewaying every
+// target in one graph lets a downstream target's gateway steal weight that is reached only
+// through this one, undercounting its prize below its own exclusive savings.
+func (g *buildGraph) moduleGateway(target string) func(srcMod, dstMod string) bool {
+	return func(srcMod, dstMod string) bool { return dstMod == target && srcMod != target }
 }
 
 // buildChildrenAndRetained derives dominator-tree children from idom and computes each

@@ -52,6 +52,26 @@ func TestSessionWhatIf(t *testing.T) {
 	assert.Equal(t, uint64(0), s.WhatIf(map[string]bool{"stereo": true}).FreedBytes)
 }
 
+// a target imported by a locked, uncontrolled dep reads its full prize even though a controlled
+// cut frees nothing, and names the locked dep as the pin. This is the prize/effort reframe end to
+// end through the session: gcr is imported by controlled stereo (so it's a target) and by locked
+// syft (so cutting stereo frees nothing, but 1500 is still at stake behind syft).
+func TestSessionPrizePinnedByLockedDep(t *testing.T) {
+	s := testSession(userScenario(true), ClassInputs{Controlled: []string{"stereo"}, Locked: []string{"syft"}})
+
+	var gcr Module
+	for _, m := range s.Modules() {
+		if m.Module == "gcr" {
+			gcr = m
+		}
+	}
+	require.Equal(t, "gcr", gcr.Module)
+	require.True(t, gcr.Target)
+	assert.Equal(t, uint64(0), gcr.Exclusive, "controlled cut frees nothing: locked syft still holds gcr")
+	assert.Equal(t, uint64(1500), gcr.Prize, "prize is gcr + docker (oci is held by syft too, so not dominated)")
+	assert.Equal(t, []string{"syft"}, gcr.PinnedBy, "names the locked dep to replace or patch")
+}
+
 // Detail.PullsIn reconciles the two sizes that confuse people: pruning a module frees its
 // exclusive subtree, but the modules it also reaches that survive (held by other importers)
 // stay. PullsIn = Exclusive + held, so "frees X of Y" always adds up.

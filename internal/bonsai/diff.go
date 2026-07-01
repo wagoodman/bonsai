@@ -112,6 +112,17 @@ func resolveBaseline(cfg Config, dir, ref string) (*Resolved, string, func(), er
 		wtCleanup()
 		return nil, "", nil, err
 	}
+	// `git rev-parse --show-toplevel` returns a symlink-resolved path (e.g. /private/var on macOS),
+	// while filepath.Abs keeps the symlink (/var), so a naive filepath.Rel would produce a path that
+	// escapes the worktree and points back at the current tree — silently making the baseline equal
+	// the working tree. Resolve both into the same namespace before taking the relative path. (Both
+	// paths exist here, so EvalSymlinks is safe; fall back to the unresolved form if it can't.)
+	if r, e := filepath.EvalSymlinks(root); e == nil {
+		root = r
+	}
+	if a, e := filepath.EvalSymlinks(abs); e == nil {
+		abs = a
+	}
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {
 		wtCleanup()

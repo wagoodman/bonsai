@@ -61,16 +61,24 @@ func TestSymbolPackage(t *testing.T) {
 }
 
 func TestReadReferenceEdges(t *testing.T) {
-	// a graph with a main package, two deps, and stdlib fmt. reachability edges are
-	// overwritten from the dump below.
+	// the graph carries the COMPLETE go list import edges; the dump only decides which packages
+	// survived DCE. shared is imported by both app and used (a diamond) -- the case the linker's
+	// first-discovery dump cannot express but go list can.
 	graph := func() *buildGraph {
 		g := &buildGraph{
 			packages:     map[string]*listPackage{},
 			moduleOfPkg:  map[string]string{},
 			rootPackages: []string{"app/cmd/app"},
 		}
-		for _, ip := range []string{"app/cmd/app", "fmt", "github.com/x/used", "github.com/x/dead"} {
-			g.packages[ip] = &listPackage{ImportPath: ip, Imports: []string{"stale"}}
+		imports := map[string][]string{
+			"app/cmd/app":         {"fmt", "github.com/x/used", "github.com/x/shared"},
+			"github.com/x/used":   {"github.com/x/shared"},
+			"github.com/x/shared": {"fmt"},
+			"github.com/x/dead":   {"fmt"},
+			"fmt":                 nil,
+		}
+		for ip, imps := range imports {
+			g.packages[ip] = &listPackage{ImportPath: ip, Imports: imps}
 		}
 		return g
 	}
@@ -83,31 +91,39 @@ func TestReadReferenceEdges(t *testing.T) {
 		wantErr   require.ErrorAssertionFunc
 	}{
 		{
-			name: "real edges kept, aux and unknown dropped",
+			name: "live edges kept (incl. shared diamond), dead pkg and edges into it dropped",
 			dump: strings.Join([]string{
 				"# app/cmd/app",
 				"main.main -> fmt.Fprintln",
 				"main.main -> github.com/x/used.Do",
-				"fmt.Fprintln -> fmt.newPrinter",                 // intra-package, ignored
-				"runtime.throw -> github.com/x/used.Do.arginfo1", // aux target, dropped
-				"main.main -> runtime.morestack",                 // unknown target pkg, dropped
-				"github.com/x/used.Do -> fmt.Sprintf",
+				"main.main -> github.com/x/shared.S",             // shared first discovered via app...
+				"github.com/x/used.Do -> github.com/x/shared.S",  // ...so the dump still records this edge as a from
+				"runtime.throw -> github.com/x/used.Do.arginfo1", // aux symbol: doesn't mark a package live
+				"main.main -> runtime.morestack",                 // unknown package: ignored
+				"github.com/x/shared.S -> fmt.Sprintf",
 			}, "\n"),
-			// app/cmd/app -> {fmt, used}; used -> {fmt}; dead -> {} ; fmt -> {} (intra only)
+			// dead is never witnessed -> its imports cleared AND it's not a target of any edge.
+			// shared keeps BOTH importers (app and used): the regression the live-set fix exists for.
 			wantEdges: map[string][]string{
-				"app/cmd/app":       {"fmt", "github.com/x/used"},
-				"fmt":               {},
-				"github.com/x/used": {"fmt"},
-				"github.com/x/dead": {},
+				"app/cmd/app":         {"fmt", "github.com/x/shared", "github.com/x/used"},
+				"github.com/x/used":   {"github.com/x/shared"},
+				"github.com/x/shared": {"fmt"},
+				"github.com/x/dead":   nil,
+				"fmt":                 nil, // live, but imports nothing
 			},
-			wantN: 3,
+			wantN: 5, // app:3 + used:1 + shared:1
 		},
 		{
-			name:  "empty dump yields no edges",
+			name:  "empty dump leaves go list edges untouched",
 			dump:  "",
 			wantN: 0,
+			// fallback: nothing witnessed, so the source edges must survive verbatim.
 			wantEdges: map[string][]string{
-				"app/cmd/app": {}, "fmt": {}, "github.com/x/used": {}, "github.com/x/dead": {},
+				"app/cmd/app":         {"fmt", "github.com/x/shared", "github.com/x/used"},
+				"github.com/x/used":   {"github.com/x/shared"},
+				"github.com/x/shared": {"fmt"},
+				"github.com/x/dead":   {"fmt"},
+				"fmt":                 nil,
 			},
 		},
 	}
@@ -138,45 +154,5 @@ func TestReadReferenceEdges(t *testing.T) {
 				t.Errorf("edge mismatch (-want +got):\n%s", diff)
 			}
 		})
-	}
-}
-
-// a standard-library package cannot import a third-party module in real source; such a
-// reference edge is a symbol-attribution artifact and must be dropped so it does not pin the
-// external module as always-reachable.
-func TestReadReferenceEdgesDropsStdlibToExternal(t *testing.T) {
-	g := &buildGraph{
-		packages:     map[string]*listPackage{},
-		moduleOfPkg:  map[string]string{},
-		rootPackages: []string{"app/cmd/app"},
-	}
-	g.packages["app/cmd/app"] = &listPackage{ImportPath: "app/cmd/app"}
-	g.packages["strings"] = &listPackage{ImportPath: "strings", Standard: true}
-	g.packages["fmt"] = &listPackage{ImportPath: "fmt", Standard: true}
-	g.packages["github.com/x/dep"] = &listPackage{ImportPath: "github.com/x/dep"}
-
-	dump := strings.Join([]string{
-		"main.main -> github.com/x/dep.Do",      // external -> external: kept
-		"github.com/x/dep.Do -> fmt.Sprintf",    // external -> stdlib: kept
-		"strings.Map -> github.com/x/dep.Token", // stdlib -> external: dropped (artifact)
-		"strings.Map -> fmt.Sprintf",            // stdlib -> stdlib: kept
-	}, "\n")
-
-	_, err := readReferenceEdges(g, strings.NewReader(dump))
-	require.NoError(t, err)
-
-	got := map[string][]string{}
-	for ip, p := range g.packages {
-		sort.Strings(p.Imports)
-		got[ip] = p.Imports
-	}
-	want := map[string][]string{
-		"app/cmd/app":      {"github.com/x/dep"},
-		"github.com/x/dep": {"fmt"},
-		"strings":          {"fmt"}, // the strings -> github.com/x/dep artifact is gone
-		"fmt":              {},
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("edge mismatch (-want +got):\n%s", diff)
 	}
 }

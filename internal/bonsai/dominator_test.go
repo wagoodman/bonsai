@@ -31,7 +31,7 @@ func TestDominatorExclusiveMatchesTreeShake(t *testing.T) {
 			g := spec.build()
 			c := classify(g, newPatternMatcher(cfg.controlled), newPatternMatcher(nil), newPatternMatcher(cfg.unlock))
 			base := g.reachable(nil)
-			dom := g.buildDomModel(spec.size, base, c)
+			dom := g.buildDomModel(spec.size, base, g.controlledGateway(c))
 
 			for _, target := range c.targets() {
 				want := g.treeShake(target, spec.size, base)
@@ -49,7 +49,7 @@ func TestPruneResultsSharedScenario(t *testing.T) {
 	g := spec.build()
 	c := classify(g, newPatternMatcher([]string{"stereo", "syft"}), newPatternMatcher(nil), newPatternMatcher(nil))
 	base := g.reachable(nil)
-	dom := g.buildDomModel(spec.size, base, c)
+	dom := g.buildDomModel(spec.size, base, g.controlledGateway(c))
 	blockers := g.blockerSets(c)
 	prunes := g.pruneResults(spec.size, base, c, dom, blockers)
 
@@ -63,10 +63,13 @@ func TestPruneResultsSharedScenario(t *testing.T) {
 		t.Errorf("shared holder mismatch (-want +got):\n%s", diff)
 	}
 
-	// pruning oci alone frees nothing — gcr still imports it.
+	// pruning oci alone frees nothing — gcr still imports it — but its PRIZE is the full 300
+	// bytes at stake: the all-inbound gateway credits the weight a controlled cut zeroes.
 	oci := prunes["oci"]
 	require.NotNil(t, oci)
 	assert.Equal(t, uint64(0), oci.FreedBytes)
+	assert.Equal(t, uint64(300), oci.PrizeBytes, "prize surfaces oci's weight even though EXCL is 0")
+	assert.Greater(t, oci.PrizeBytes, oci.FreedBytes, "prize exceeds exclusive when a co-holder pins the module")
 }
 
 // randomized layered DAGs with random controlled/locked sets: the dominator exclusive must
@@ -77,7 +80,7 @@ func TestDominatorExclusiveMatchesTreeShakeRandom(t *testing.T) {
 			g, sizes, controlled, locked := randomGraph(seed)
 			c := classify(g, controlled, locked, newPatternMatcher(nil))
 			base := g.reachable(nil)
-			dom := g.buildDomModel(sizes, base, c)
+			dom := g.buildDomModel(sizes, base, g.controlledGateway(c))
 
 			for _, target := range c.targets() {
 				want := g.treeShake(target, sizes, base).FreedBytes
@@ -85,6 +88,23 @@ func TestDominatorExclusiveMatchesTreeShakeRandom(t *testing.T) {
 				require.Equalf(t, want, got, "seed %d target %s", seed, target)
 			}
 		})
+	}
+}
+
+// removing a module frees at least what cutting your own imports of it frees, so a target's
+// prize (module-only gateway, full-graph retained) must never fall below its exclusive savings,
+// on any random graph. This is the invariant the naive all-targets-at-once prize pass violated.
+func TestPrizeAtLeastExclusive(t *testing.T) {
+	for seed := range int64(60) {
+		g, sizes, controlled, locked := randomGraph(seed)
+		c := classify(g, controlled, locked, newPatternMatcher(nil))
+		base := g.reachable(nil)
+		dom := g.buildDomModel(sizes, base, g.controlledGateway(c))
+		for _, target := range c.targets() {
+			prizeDom := g.buildDomModel(sizes, base, g.moduleGateway(target))
+			require.GreaterOrEqualf(t, prizeDom.exclusiveBytes(target), dom.exclusiveBytes(target),
+				"seed %d target %s: prize below exclusive", seed, target)
+		}
 	}
 }
 

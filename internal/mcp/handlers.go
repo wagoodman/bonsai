@@ -45,22 +45,27 @@ func (s *Server) sizeTargets(_ context.Context, _ *mcp.CallToolRequest, in Input
 				continue // not a prune candidate
 			}
 			c := Candidate{
-				Module:         m.Module,
-				Class:          m.Class,
-				FreedBytes:     m.Prune.FreedBytes,
-				PotentialBytes: m.Prune.PotentialBytes,
-				SharedWith:     m.Prune.SharedWith,
+				Module:              m.Module,
+				Class:               m.Class,
+				PrizeBytes:          m.Prune.PrizeBytes,
+				FreedBytes:          m.Prune.FreedBytes,
+				PotentialBytes:      m.Prune.PotentialBytes,
+				SharedWith:          m.Prune.SharedWith,
+				PinnedBy:            m.Prune.PinnedBy,
+				PrizeByEntryPackage: m.Prune.PrizeByEntryPackage,
+				Effort:              m.Prune.Effort,
 			}
 			if m.Coupling != nil {
 				c.ImportingPackages = m.Coupling.ImportingPackages
 				c.ImportSites = m.Coupling.ImportSites
 			}
-			c.Verdict = sizeVerdict(c)
 			out.Candidates = append(out.Candidates, c)
 		}
+		// rank by prize (bytes at stake) to match the human table, not by the unilateral slice —
+		// a big prize behind a locked dep must not sink to the bottom the way freedBytes buries it.
 		sort.Slice(out.Candidates, func(i, j int) bool {
-			if out.Candidates[i].FreedBytes != out.Candidates[j].FreedBytes {
-				return out.Candidates[i].FreedBytes > out.Candidates[j].FreedBytes
+			if out.Candidates[i].PrizeBytes != out.Candidates[j].PrizeBytes {
+				return out.Candidates[i].PrizeBytes > out.Candidates[j].PrizeBytes
 			}
 			return out.Candidates[i].Module < out.Candidates[j].Module
 		})

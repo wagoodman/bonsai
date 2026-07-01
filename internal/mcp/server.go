@@ -25,7 +25,7 @@ type Server struct {
 
 // NewServer assembles the bonsai MCP server with its analysis tools. version is stamped into the
 // server implementation info reported to clients.
-func NewServer(version string) *Server {
+func NewServer(version string) *Server { //nolint:funlen // one cohesive registration of the tool set with its descriptions
 	s := &Server{
 		mcp:   mcp.NewServer(&mcp.Implementation{Name: "bonsai", Title: "bonsai binary-size guide", Version: version}, nil),
 		cache: newResolveCache(),
@@ -41,10 +41,12 @@ func NewServer(version string) *Server {
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "bonsai_size_targets",
-		Description: "Rank which dependencies, if removed, free the most binary bytes — and in what order. Each " +
-			"candidate carries the benefit (bytes freed alone, and the larger freeable subtree) and the cost " +
-			"(how many first-party packages and import statements reference it), plus a coarse effort verdict. " +
-			"Use to find high-value, least-work prune or replace candidates.",
+		Description: "Rank dependencies by prize — the bytes at stake if the module left the binary — on two axes: " +
+			"the prize (full-graph retained size, across the controlled boundary) and the effort to realize it. A " +
+			"big prize with freedBytes 0 is NOT a non-candidate: it is weight pinned by an uncontrolled dep, named in " +
+			"pinnedBy (replace/patch/upstream it), with prizeByEntryPackage showing where the weight concentrates. " +
+			"effort is quickWin, coordinated (co-prune other targets), pinnedByDep, or core. Weigh prize against " +
+			"effort rather than grabbing the easiest cut; the biggest win is often pinnedByDep, not the top freedBytes.",
 		OutputSchema: openObjectSchema,
 	}, s.sizeTargets)
 

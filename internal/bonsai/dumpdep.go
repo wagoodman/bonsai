@@ -8,16 +8,22 @@ import (
 	"strings"
 )
 
-// applyReferenceEdges rewrites the build graph's per-package import edges using the
-// linker's `-dumpdep` symbol-dependency dump, so reachability reflects what actually
-// linked into the binary (post dead-code elimination) rather than source-level imports.
+// applyReferenceEdges narrows the build graph's per-package import edges to what actually
+// survived dead-code elimination, using the linker's `-dumpdep` symbol-dependency dump.
 //
-// The dump is a stream of `from -> to` symbol edges. We collapse each edge to the packages
-// owning its endpoints and keep only edges between packages already in the build graph.
-// The result is a strictly tighter reference graph: imports the linker dropped disappear,
-// so prune/tree-shake estimates stop over-counting. It returns the number of package edges
-// applied; zero means the dump was empty or unparseable and the caller should keep the
-// `go list` import edges as a fallback.
+// The dump is a stream of `from -> to` symbol edges, but it is NOT a complete reference graph:
+// the linker records the edge into a symbol only the first time that symbol is marked reachable
+// (the print lives inside the deadcode pass's "not yet reachable" branch), so a dependency
+// reached through two importers shows only one of those edges. Using it directly as the import
+// graph would collapse every shared dependency onto a single arbitrary importer and wreck the
+// retained-size attribution that is the whole point of the tool.
+//
+// What the dump IS reliable for: which packages survived DCE. Every reachable symbol appears as
+// an endpoint, so the set of packages owning a dump endpoint is exactly the live set. So we use
+// the dump only to derive that live set, then keep the COMPLETE `go list` import edges
+// restricted to live packages — edges into DCE-dropped packages disappear (target not live),
+// while shared deps keep every importer edge. It returns the number of package edges kept; zero
+// means the dump was empty or unparseable and the caller should keep the `go list` edges as-is.
 func applyReferenceEdges(g *buildGraph, dumpdepPath string) (int, error) {
 	f, err := os.Open(dumpdepPath)
 	if err != nil {
@@ -27,22 +33,24 @@ func applyReferenceEdges(g *buildGraph, dumpdepPath string) (int, error) {
 	return readReferenceEdges(g, f)
 }
 
-// readReferenceEdges parses a -dumpdep stream and rewrites g's per-package import edges
-// from it; see applyReferenceEdges.
+// readReferenceEdges parses a -dumpdep stream and narrows g's per-package import edges to the
+// live (post-DCE) packages it witnesses; see applyReferenceEdges.
 func readReferenceEdges(g *buildGraph, r io.Reader) (int, error) {
 	// the main package's symbols are named `main.X`, not by import path; map them back to
-	// the real entrypoint import path so they connect to the rest of the graph.
+	// the real entrypoint import path so they're attributed to the entrypoint package.
 	mainImport := ""
 	if len(g.rootPackages) > 0 {
 		mainImport = g.rootPackages[0]
 	}
 
-	edges := map[string]map[string]bool{}
-	add := func(from, to string) {
-		if edges[from] == nil {
-			edges[from] = map[string]bool{}
+	// live = packages with at least one symbol that survived DCE, witnessed as a dump endpoint.
+	live := map[string]bool{}
+	noteLive := func(sym string) {
+		if pkg := symbolPackage(sym, mainImport); pkg != "" {
+			if _, known := g.packages[pkg]; known {
+				live[pkg] = true
+			}
 		}
-		edges[from][to] = true
 	}
 
 	sc := bufio.NewScanner(r)
@@ -55,38 +63,43 @@ func readReferenceEdges(g *buildGraph, r io.Reader) (int, error) {
 		if !ok {
 			continue
 		}
-		from := symbolPackage(lhs, mainImport)
-		to := symbolPackage(rhs, mainImport)
-		if from == "" || to == "" || from == to {
-			continue
-		}
-		// only edges between packages the build graph knows about; everything else is
-		// runtime/compiler scaffolding we can't attribute to a module.
-		fromPkg, toPkg := g.packages[from], g.packages[to]
-		if fromPkg == nil || toPkg == nil {
-			continue
-		}
-		// a standard-library package cannot import a third-party module in real source; such
-		// an edge is a symbol-attribution artifact (e.g. a generic instantiated with an
-		// external type whose symbol is named for the stdlib package that defines the generic).
-		// Keeping it would falsely pin the external module as always-reachable, so drop it.
-		if fromPkg.Standard && !toPkg.Standard {
-			continue
-		}
-		add(from, to)
+		noteLive(lhs)
+		noteLive(rhs)
 	}
 	if err := sc.Err(); err != nil {
 		return 0, fmt.Errorf("reading dumpdep: %w", err)
 	}
 
+	// a parse miss (nothing witnessed) means the dump was empty/unusable: leave the go list edges
+	// untouched so reachability still works, and signal the caller with a zero return. (this is
+	// checked before adding roots below, so an empty dump never gets mistaken for a one-package
+	// build and clobbers the source edges.)
+	if len(live) == 0 {
+		return 0, nil
+	}
+
+	// the entrypoint is never dead code, even if its symbols only ever appear on the `from` side.
+	for _, root := range g.rootPackages {
+		live[root] = true
+	}
+
+	// keep the complete go list edges restricted to live packages. dead packages lose their
+	// imports (and, having no live importer, drop out of the reachable sweep); shared deps keep
+	// every importer edge, so retained-size attribution sees the real DAG.
 	n := 0
-	for _, p := range g.packages {
-		refs := edges[p.ImportPath]
-		p.Imports = make([]string, 0, len(refs))
-		for to := range refs {
-			p.Imports = append(p.Imports, to)
+	for ip, p := range g.packages {
+		if !live[ip] {
+			p.Imports = nil
+			continue
 		}
-		n += len(refs)
+		kept := p.Imports[:0] // in-place filter: we only ever shrink
+		for _, imp := range p.Imports {
+			if live[imp] {
+				kept = append(kept, imp)
+			}
+		}
+		p.Imports = kept
+		n += len(kept)
 	}
 	return n, nil
 }

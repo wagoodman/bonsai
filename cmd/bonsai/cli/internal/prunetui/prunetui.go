@@ -215,8 +215,10 @@ func (m *model) rebuildVisible() {
 				return a.Size > b.Size
 			}
 		default:
-			if a.Exclusive != b.Exclusive {
-				return a.Exclusive > b.Exclusive
+			// prune sort: rank by prize (bytes at stake), so a big win pinned by a locked dep
+			// surfaces instead of sinking to 0 the way exclusive savings bury it.
+			if a.Prize != b.Prize {
+				return a.Prize > b.Prize
 			}
 			if a.Size != b.Size {
 				return a.Size > b.Size
@@ -648,8 +650,8 @@ func (m model) viewList(width int) string {
 			}
 		}
 		val := mod.Size
-		if m.sortMode == sortPrune && mod.Exclusive > 0 {
-			val = mod.Exclusive
+		if m.sortMode == sortPrune && mod.Prize > 0 {
+			val = mod.Prize
 		}
 		// the go column: the module's declared `go` minimum, △-flagged and highlighted when it
 		// pins the floor.
@@ -679,7 +681,7 @@ func (m model) viewList(width int) string {
 func (m model) listCols(width int) string {
 	valHdr := "size"
 	if m.sortMode == sortPrune {
-		valHdr = "prune"
+		valHdr = "prize"
 	}
 	cols := fmt.Sprintf("%s %s %8s  %-7s %s", " ", " ", valHdr, "go min", "module")
 	return styDim.Render(fit(cols, width))
@@ -697,12 +699,17 @@ func (m model) detailBody(width int) []string {
 		styDim.Render(detailTags(d)),
 		fmt.Sprintf("size %s · own %s", humize(d.Size), humize(d.Own)),
 		pruneAloneLine(d),
+	}
+	if pl := prizeLine(d); pl != "" {
+		body = append(body, pl)
+	}
+	body = append(body,
 		styDim.Render(fmt.Sprintf("coupling %d pkg · %d imp · %d sym · imported by %d",
 			d.Coupling.ImportingPackages, d.Coupling.ImportSites, d.Coupling.DistinctSymbols, d.Importers)),
 		m.goDirectiveLine(d),
 		"",
-		styHead.Render("pulls in  ") + styDim.Render(glyphIn+" in binary  "+glyphOut+" pruned · tab here, space expands"),
-	}
+		styHead.Render("pulls in  ")+styDim.Render(glyphIn+" in binary  "+glyphOut+" pruned · tab here, space expands"),
+	)
 	if len(m.dragStatus) == 0 {
 		return append(body, styDim.Render("no modules pulled in!"))
 	}
@@ -753,6 +760,40 @@ func pruneAloneLine(d bonsai.Detail) string {
 			" of %s pulled in · %s held by others (stays)", humize(d.PullsIn), humize(held)))
 	}
 	return "prune-alone frees " + frees + styDim.Render(" (all it pulls in — nothing shared)")
+}
+
+// prizeLine surfaces the prize axis when a clean cut can't reach it: the bytes at stake if the
+// module left the binary, and the locked deps pinning it (the real change target — replace or
+// patch). Empty when prize adds nothing over prune-alone, so the common case stays uncluttered.
+func prizeLine(d bonsai.Detail) string {
+	if !d.Target || d.Prize <= d.Exclusive {
+		return ""
+	}
+	line := "prize " + styGood.Render(humize(d.Prize)) + styDim.Render(" at stake")
+	switch {
+	case len(d.PinnedBy) > 0:
+		line += styDim.Render(" · pinned by " + joinShort(d.PinnedBy) + " (replace or patch)")
+	default:
+		line += styDim.Render(" · pinned in the build (not a clean cut)")
+	}
+	return line
+}
+
+// joinShort renders module paths by their last element (github.com/anchore/syft -> syft),
+// collapsing the tail past the first two into "+N" so a long pin list stays one line.
+func joinShort(mods []string) string {
+	const maxShown = 2
+	short := make([]string, 0, len(mods))
+	for _, m := range mods {
+		if i := strings.LastIndex(m, "/"); i >= 0 {
+			m = m[i+1:]
+		}
+		short = append(short, m)
+	}
+	if len(short) <= maxShown {
+		return strings.Join(short, ", ")
+	}
+	return strings.Join(short[:maxShown], ", ") + fmt.Sprintf(" +%d", len(short)-maxShown)
 }
 
 // goDirectiveLine describes the highlighted module's `go` directive and its role in the floor:
@@ -1062,7 +1103,7 @@ func sortLabel(mode int) string {
 	case sortGo:
 		return "by go min"
 	default:
-		return "by prune value"
+		return "by prize"
 	}
 }
 

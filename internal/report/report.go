@@ -556,15 +556,22 @@ func (r *report) pruneCandidates(an *bonsai.PruneReport) {
 			prunable = append(prunable, m)
 		}
 	}
-	sort.Slice(prunable, func(i, j int) bool { return prunable[i].Prune.FreedBytes > prunable[j].Prune.FreedBytes })
+	// rank by PRIZE (bytes at stake), not exclusive savings: a big win pinned by a locked dep
+	// (freed-alone 0) must surface near the top, not sink to the bottom the way EXCL buries it.
+	sort.Slice(prunable, func(i, j int) bool {
+		if prunable[i].Prune.PrizeBytes != prunable[j].Prune.PrizeBytes {
+			return prunable[i].Prune.PrizeBytes > prunable[j].Prune.PrizeBytes
+		}
+		return prunable[i].Prune.FreedBytes > prunable[j].Prune.FreedBytes
+	})
 
 	// when --blame is set, fold each target's fair-share of shared weight into a BLAME column
-	// rather than a separate section, so EXCL (freed alone) and BLAME (fair cost) read across one row.
+	// rather than a separate section, so the effort axis reads across one row.
 	blame := map[string]uint64{}
 	for _, b := range an.Blame {
 		blame[b.Module] = b.Blame
 	}
-	desc := "EXCL = freed by pruning this alone; POT = freeable weight in its subtree; GET% = EXCL/POT (the rest is shared with other deps)"
+	desc := "PRIZE = bytes at stake if the module left the binary (across the controlled boundary); EXCL = freed by cutting your own imports alone; EFFORT/BLOCKER = how to realize it, and the locked dep to replace or patch when pinned; POT/GET% = freeable subtree if co-holders go too"
 	if len(blame) > 0 {
 		how := "sampled"
 		if an.Blame[0].Exact {
@@ -575,7 +582,7 @@ func (r *report) pruneCandidates(an *bonsai.PruneReport) {
 
 	r.heading("Prune candidates", desc)
 	if len(prunable) > 0 {
-		r.pruneHeadline(prunable[0])
+		r.pruneHeadline(prunable)
 	}
 	rows := [][]string{}
 	for i, m := range prunable {
@@ -584,37 +591,64 @@ func (r *report) pruneCandidates(an *bonsai.PruneReport) {
 		}
 		p := m.Prune
 		c := coup(m)
-		row := []string{r.pal.good(humize(p.FreedBytes)), humize(p.PotentialBytes)}
+		row := []string{r.pal.good(humize(p.PrizeBytes)), humize(p.FreedBytes), p.Effort, pinBlocker(p)}
 		if len(blame) > 0 {
 			row = append(row, humize(blame[m.Module]))
 		}
-		row = append(row, getPct(p), itoa(len(p.FreedModules)),
-			itoa(c.ImportingPackages), itoa(c.ImportSites), itoa(c.DistinctSymbols), m.Class, m.Module)
+		row = append(row, humize(p.PotentialBytes), getPct(p),
+			itoa(c.ImportingPackages), itoa(c.ImportSites), m.Class, m.Module)
 		rows = append(rows, row)
 	}
-	headers := []string{"EXCL", "POT"}
+	headers := []string{"PRIZE", "EXCL", "EFFORT", "BLOCKER"}
 	if len(blame) > 0 {
 		headers = append(headers, "BLAME")
 	}
-	headers = append(headers, "GET%", "ORPHANS", "IMP-PKGS", "IMP-SITES", "SYMS", "CLASS", colModule)
+	headers = append(headers, "POT", "GET%", "IMP-PKGS", "IMP-SITES", "CLASS", colModule)
 	r.table(headers, rows, nil)
 }
 
-// pruneHeadline renders the one-line "biggest realistic win" sentence for the top prune
-// candidate, naming the shared weight that pruning it would NOT free and who holds it.
-func (r *report) pruneHeadline(m bonsai.ModuleSize) {
-	p := m.Prune
-	line := fmt.Sprintf("best single win: prune %s → %s now", m.Module, humize(p.FreedBytes))
-	if p.PotentialBytes > p.FreedBytes {
-		line += fmt.Sprintf(", %s of the %s freeable in its subtree", getPct(p), humize(p.PotentialBytes))
+// pinBlocker names the locked dep to replace or patch for a pinned candidate (empty otherwise) —
+// the per-row action for pinnedByDep, so the biggest wins read their blocker inline.
+func pinBlocker(p *bonsai.PruneResult) string {
+	if len(p.PinnedBy) == 0 {
+		return ""
 	}
-	if p.SharedBytes > 0 {
-		extra := ""
-		if len(p.SharedWith) > 0 && len(p.SharedWith[0].AlsoVia) > 0 {
-			extra = " — co-prune " + joinModules(p.SharedWith[0].AlsoVia) + " to free it"
+	s := shortModule(p.PinnedBy[0])
+	if len(p.PinnedBy) > 1 {
+		s += fmt.Sprintf(" +%d", len(p.PinnedBy)-1)
+	}
+	return s
+}
+
+// pruneHeadline renders the one-line orientation for the ranking: the biggest prize (even when
+// it frees nothing alone, naming the dep that pins it) and, separately, the easiest win — the
+// most weight you can bank by cutting your own imports today.
+func (r *report) pruneHeadline(cands []bonsai.ModuleSize) {
+	big := cands[0].Prune
+	line := fmt.Sprintf("biggest win: %s → %s at stake", cands[0].Module, humize(big.PrizeBytes))
+	switch {
+	case big.Effort == "pinnedByDep" && len(big.PinnedBy) > 0:
+		line += fmt.Sprintf(", pinned by %s (replace or patch)", joinModules(big.PinnedBy))
+	case big.FreedBytes > 0:
+		line += fmt.Sprintf(", %s now", humize(big.FreedBytes))
+	case len(big.SharedWith) > 0 && len(big.SharedWith[0].AlsoVia) > 0:
+		line += ", co-prune " + joinModules(big.SharedWith[0].AlsoVia) + " to free it"
+	}
+
+	// easiest win: the largest weight you can bank by cutting your own imports alone.
+	var easiest *bonsai.ModuleSize
+	for i := range cands {
+		if cands[i].Prune.FreedBytes == 0 {
+			continue
 		}
-		line += fmt.Sprintf(" (%s shared%s)", humize(p.SharedBytes), extra)
+		if easiest == nil || cands[i].Prune.FreedBytes > easiest.Prune.FreedBytes {
+			easiest = &cands[i]
+		}
 	}
+	if easiest != nil && easiest.Module != cands[0].Module {
+		line += fmt.Sprintf("; easiest win: %s → %s now", easiest.Module, humize(easiest.Prune.FreedBytes))
+	}
+
 	if r.md {
 		fmt.Fprintf(r.w, "_%s_\n\n", line)
 		return

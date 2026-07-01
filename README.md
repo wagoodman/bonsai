@@ -143,13 +143,18 @@ The same analysis comes out in whatever form fits who's reading it:
 
 ### Tables, the quick read
 
-`bonsai prune` ranks your prune candidates and lays out a plan. The headline is the cut most likely to be worth it:
+`bonsai prune` ranks candidates on two axes: the **prize** (bytes at stake if the module left the binary) and the **effort** to realize it. Ranking by prize instead of "what's easiest to remove" keeps the big wins from hiding: a dependency your own code barely touches can still be pinned in the build by a locked dep, worth a lot, and invisible if you only look at what a clean cut frees.
 
 ```
-best single win: prune github.com/modelcontextprotocol/go-sdk → 1.1 MB now,
-                 65.6% of the 1.7 MB freeable in its subtree
-                 (587.5 kB shared, co-prune bubbly, clio, bubbles +2 more to free it)
+biggest win: github.com/hashicorp/go-getter → 17.9 MB at stake, pinned by github.com/anchore/syft (replace or patch); easiest win: github.com/glebarez/sqlite → 3.9 MB now
+
+  PRIZE     EXCL     EFFORT       BLOCKER  POT       GET%   IMP-SITES  MODULE
+  17.9 MB   0 B      pinnedByDep  syft     0 B       -      2          github.com/hashicorp/go-getter
+  3.9 MB    3.9 MB   quickWin              4.5 MB    85.7%  4          github.com/glebarez/sqlite
+  904 kB    0 B      coordinated           907 kB    0.0%   23         gorm.io/gorm
 ```
+
+PRIZE is the full-graph retained size; EXCL is what you bank by cutting your own imports alone. When they differ, EFFORT says why: `quickWin` (cut your imports), `coordinated` (co-prune the sibling targets), `pinnedByDep` (an uncontrolled locked dep in BLOCKER holds it, so replace or patch that dep), or `core` (too wired in to cut). The go-getter row is the case worth the reframe: 0 bytes freed by a clean cut, but 17.9 MB at stake behind syft.
 
 Prunes interact, since shared weight only frees once the last thing holding it is gone, so the plan orders the cuts and shows, for each one, whether the weight is the dep's own code or the stuff it drags out behind it:
 
@@ -183,7 +188,7 @@ Why a server instead of just shelling out to the CLI? Because the CLI rebuilds y
 
 | Tool | The agent's question |
 |---|---|
-| `bonsai_size_targets` | Where are the biggest size wins, ranked, and in what order? |
+| `bonsai_size_targets` | Where are the biggest size wins (ranked by prize), and what effort does each take, including deps pinned in the build that a clean cut can't reach? |
 | `bonsai_go_floor` | How low can my `go` directive go, and which deps pin it? |
 | `bonsai_locate_cuts` | I'm cutting module X, so which files/lines do I edit, and what happens? |
 | `bonsai_anatomy` | What's the binary's size shape now? |

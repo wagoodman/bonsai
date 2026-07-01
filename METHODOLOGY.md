@@ -29,7 +29,7 @@ flowchart TD
     GRAPH --> WEIGHTED
     CLASS["§6 class model<br/>(controlled / locked gives<br/>cuttable edges, prune targets)"] --> WEIGHTED
 
-    WEIGHTED -->|"§7 dominator tree<br/>+ gateway trick"| EXCL["exclusive savings<br/>(retained size)"]
+    WEIGHTED -->|"§7 dominator tree<br/>+ gateway trick"| EXCL["prize + exclusive savings<br/>(retained size, per-module<br/>vs controlled gateway)"]
     WEIGHTED -->|"§8 reachIndex: v(S)"| PLAN["greedy ordered<br/>prune plan"]
     WEIGHTED -->|"§9 Shapley value"| BLAME["fair-share blame"]
     WEIGHTED -->|"§10 go directives"| FLOOR["Go-version floor"]
@@ -308,6 +308,44 @@ This stage produces, for each prune candidate:
 
 That three-number split is the honest story: you save this much by yourself, this much more is
 theoretically there but shared, and here's who you'd have to drop alongside to get it.
+
+### The prize axis: what a clean cut can't see
+
+Exclusive savings answer "what do I free by cutting my own imports?" That is the right question
+for effort, but it has a blind spot: it credits only weight your controlled cut can reach. When a
+dependency is also imported by a locked dep you don't control (say a vendored library's own code
+pulls it), cutting your imports frees nothing, so it reads FreedBytes 0 and sinks to the bottom
+of the ranking, even if megabytes hang off it. The single biggest real win in a binary can be
+exactly this: weight pinned in the build by a dep you'd replace or patch, not one you'd stop
+importing.
+
+So bonsai computes a second number, the **prize**: the module's full-graph retained size, the
+bytes that leave if the module vanishes by any means (prune, replace, patch, upstream), across
+the controlled boundary. It reuses the same gateway trick with a different edge set: route *every*
+in-edge of the module through its gateway, controlled or not, and read the gateway's retained
+size. Because that gateway captures the uncontrolled importer's edge too, its dominated subtree
+includes the weight the controlled-only gateway missed. PrizeBytes is always at least FreedBytes
+(a test pins this), and it exceeds it precisely when an uncontrolled dep holds the module. This is
+one gateway pass per module rather than one for all targets at once: gatewaying every target
+together lets a downstream target's gateway steal weight reached only through the module above it,
+which would push the prize below the exclusive savings, an impossible result.
+
+Two fields make the prize actionable:
+
+- PinnedBy: the locked, uncontrolled deps that directly import the module and hold it against a
+  controlled cut. These name the change target: the dep to replace, patch, or upstream. One
+  `go.mod replace` of the leaf usually covers every importer at once.
+- PrizeByEntryPackage: how the prize splits across the module's entry packages, so the ceiling
+  becomes a scoped slice. It points at where the weight concentrates; it can't prove which symbols
+  inside a package are safe to strip (that needs call-graph reachability from main, not link-level
+  dominance), so it's a lead to investigate, not a guarantee.
+
+The ranking sorts by prize, and each candidate carries an **effort** label naming the distinct
+next action: `quickWin` (cut your imports), `coordinated` (co-prune the sibling targets that share
+its subtree), `pinnedByDep` (replace or patch a dep in PinnedBy), or `core` (wired into your code
+at too many sites to cut cleanly). Prize is the benefit axis, effort is the cost axis, and the two
+kept separate is what surfaces "17.9 MB at stake, 0 freed by a clean cut, pinned by syft" as a
+real candidate instead of a zero.
 
 ---
 

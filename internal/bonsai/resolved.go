@@ -142,7 +142,7 @@ func (r *Resolved) Prune() PruneReport {
 	attrTask := startTask("Attribute size", "Attributing size", "Size attributed")
 	cls := classify(g, r.opts.controlled, r.opts.locked, r.opts.unlock)
 	base := g.reachable(nil)
-	dom := g.buildDomModel(bin.SelfSize, base, cls)
+	dom := g.buildDomModel(bin.SelfSize, base, g.controlledGateway(cls))
 	blockers := g.blockerSets(cls)
 	prunes := g.pruneResults(bin.SelfSize, base, cls, dom, blockers)
 
@@ -174,6 +174,12 @@ func (r *Resolved) Prune() PruneReport {
 			ms.Coupling = coup[mod]
 		}
 		if p := prunes[mod]; p != nil {
+			// effort needs the import-site coupling, available here but not in pruneResults.
+			sites := 0
+			if ms.Coupling != nil {
+				sites = ms.Coupling.ImportSites
+			}
+			p.Effort = pruneEffort(p, sites)
 			ms.Prune = p
 		}
 		if importers != nil && !owned(cls.classOf(mod)) {

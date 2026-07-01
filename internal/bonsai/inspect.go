@@ -72,7 +72,7 @@ func (r *Resolved) Inspect(module string) (InspectReport, error) {
 	}
 
 	cls := classify(g, r.opts.controlled, r.opts.locked, r.opts.unlock)
-	dom := g.buildDomModel(selfSize, base, cls)
+	dom := g.buildDomModel(selfSize, base, g.controlledGateway(cls))
 	importers := g.moduleImporters(base)
 
 	rep := InspectReport{
