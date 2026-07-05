@@ -18,10 +18,11 @@ import (
 // size change, the modules added/removed/changed in the build, and any go-floor movement. Every
 // field is in JSON — it is the machine contract a CI bot renders into a PR comment.
 type DiffReport struct {
-	Ref            string `json:"ref"`            // the ref the user named
-	BaselineCommit string `json:"baselineCommit"` // resolved baseline (merge-base or ref)
-	CurrentCommit  string `json:"currentCommit"`  // HEAD
-	Dirty          bool   `json:"dirty"`          // current side had uncommitted changes
+	Ref            string `json:"ref"`                      // the ref the user named
+	BaselineCommit string `json:"baselineCommit"`           // resolved baseline (merge-base or ref)
+	BaselineBinary string `json:"baselineBinary,omitempty"` // set when the baseline is a prebuilt binary instead of a ref
+	CurrentCommit  string `json:"currentCommit"`            // HEAD
+	Dirty          bool   `json:"dirty"`                    // current side had uncommitted changes
 	MainModule     string `json:"mainModule"`
 
 	SizeDelta    int64  `json:"sizeDelta"` // current.AccountedSize - baseline (signed)
@@ -57,16 +58,16 @@ type GoFloorDiff struct {
 // current side is built in place so uncommitted edits count; the baseline is checked out into a
 // throwaway worktree that never disturbs the caller's tree, index, or branch.
 func Diff(cfg Config, ref string) (*DiffReport, error) {
-	if cfg.Binary != "" {
-		// both sides must be built from source for matching linker reachability.
-		return nil, fmt.Errorf("--binary cannot be used with diff: both sides are built from source")
-	}
 	dir := cfg.Dir
 	if dir == "" {
 		dir = "."
 	}
 
-	cur, err := Resolve(cfg)
+	// the current side is always the working-tree source build, even when --binary names a
+	// prebuilt baseline to compare against.
+	curCfg := cfg
+	curCfg.Binary = ""
+	cur, err := Resolve(curCfg)
 	if err != nil {
 		return nil, fmt.Errorf("building current working tree: %w", err)
 	}
@@ -74,15 +75,32 @@ func Diff(cfg Config, ref string) (*DiffReport, error) {
 
 	curCommit, clean := gitState(dir)
 
-	base, baseCommit, cleanup, err := resolveBaseline(cfg, dir, ref)
-	if err != nil {
-		return nil, err
+	var (
+		base       *Resolved
+		baseCommit string
+		cleanup    func()
+	)
+	if cfg.Binary != "" {
+		// baseline is the prebuilt binary — nothing to check out, no ref semantics. Note the two
+		// sides no longer share a linker reachability graph, so this compares a source build to
+		// whatever the binary already contains.
+		base, err = Resolve(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("analyzing baseline binary %s: %w", cfg.Binary, err)
+		}
+		cleanup = func() { base.Close() }
+	} else {
+		base, baseCommit, cleanup, err = resolveBaseline(curCfg, dir, ref)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer cleanup()
 
 	rep := diffResolved(cur, base)
 	rep.Ref = ref
 	rep.BaselineCommit = baseCommit
+	rep.BaselineBinary = cfg.Binary
 	rep.CurrentCommit = curCommit
 	rep.Dirty = !clean
 	return &rep, nil

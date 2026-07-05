@@ -29,7 +29,11 @@ func (r *report) writeDiff(rep *bonsai.DiffReport) error {
 
 // diffSummary leads with the two gate-relevant scalars: net size and floor movement.
 func (r *report) diffSummary(rep *bonsai.DiffReport) {
-	base := fmt.Sprintf("diff against %s", shortCommit(rep.BaselineCommit, rep.Ref))
+	target := shortCommit(rep.BaselineCommit, rep.Ref)
+	if rep.BaselineBinary != "" {
+		target = rep.BaselineBinary
+	}
+	base := fmt.Sprintf("diff against %s", target)
 	if rep.Dirty {
 		base += " (working tree dirty)"
 	}
