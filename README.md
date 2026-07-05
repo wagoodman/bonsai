@@ -2,6 +2,8 @@
 
 *Make smaller dependency trees for your Go projects.*
 
+<img width="956" height="739" alt="Image" src="https://github.com/user-attachments/assets/13915b6a-ef67-4e81-b415-6e08bbf12556" />
+
 `bonsai` builds your binary and finds the dependencies driving its size and your minimum Go version, including the ones pulled in transitively that you never imported directly, then works out how much each one would actually save if you pruned it. Some of them you'll genuinely need, and that call stays yours; bonsai just gives you the numbers to make it with. There's also an MCP server, so an AI agent working in your codebase can use it to find and make cuts instead of guessing.
 
 The thing it's built around: "this dep is 8 MB, so dropping it saves 8 MB" is almost never true. Most of that weight is shared with other dependencies that aren't going anywhere. What matters isn't how big a dependency is, it's how much *only it* is keeping alive. That's the same "retained size" a memory profiler shows you, applied to your dependency graph.
