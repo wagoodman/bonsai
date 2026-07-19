@@ -12,6 +12,11 @@ on:
       version:
         description: tag the latest commit on main with the given version (prefixed with v)
         required: true
+      skip-checks:
+        description: skip the check-gate (release even if checks haven't passed on main)
+        type: boolean
+        default: false
+        required: false
 
 run-name: ${{ github.event.inputs.version }}
 
@@ -24,6 +29,7 @@ jobs:
       version: ${{ github.event.inputs.version }}
 
   check-gate:
+    if: ${{ !inputs.skip-checks }}
     permissions:
       checks: read # required for getting the status of specific check names
       contents: read
@@ -36,6 +42,10 @@ jobs:
 
   release:
     needs: [check-gate, version-available]
+    if: >-
+      ${{ always()
+          && needs.version-available.result == 'success'
+          && !contains(fromJSON('["failure", "cancelled"]'), needs.check-gate.result) }}
     environment: release
     runs-on: ubuntu-24.04
     permissions:
