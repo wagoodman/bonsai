@@ -14,9 +14,11 @@ on the one before it, so it's meant to be read in order. By the end you should u
 not just what bonsai reports, but why those numbers are the right ones and where they come
 from.
 
+{{< callout emoji="💡" >}}
 The short version: bonsai treats your binary like a memory heap and your dependencies like
 objects on it, then borrows the math a memory profiler uses to answer "how much would I save
 if this went away?" Everything below is an elaboration of that one sentence.
+{{< /callout >}}
 
 ## The pipeline at a glance
 
@@ -198,9 +200,11 @@ This is the from-scratch way to answer "what does this cut free?": re-mark the g
 edges forbidden, and diff. It's slow to run for every possible cut, so it serves as the reference
 that the faster machinery (sections 7 through 9) is tested against.
 
+{{< callout type="info" >}}
 This framing is tree-shaking, not dead-code elimination: we additively keep what's reachable
 from roots, rather than subtractively removing what looks unused. The reachable set is the live
 set; the prunable set is everything reachable only through edges you're allowed to cut.
+{{< /callout >}}
 
 ---
 
@@ -290,8 +294,10 @@ shared point above both (the super-root). The consequence:
 - The 4 MB of S is credited to neither A nor Y by itself; it only frees if both go. bonsai
   reports it as A's shared weight, with Y named as the co-holder.
 
+{{< callout emoji="💡" >}}
 That's the whole point of using retained size instead of raw size: A's honest number is 5 MB,
 not 9 MB, and the tool tells you S is the 4 MB you'd unlock by dropping Y too.
+{{< /callout >}}
 
 There's one wrinkle that makes bonsai's version richer than a textbook heap profiler. In a
 heap, "free X" means deleting one node. In bonsai, "prune B" means cutting a set of edges:
@@ -308,11 +314,11 @@ disagree, the test fails.
 
 This stage produces, for each prune candidate:
 
-- FreedBytes: the exclusive, dominated savings, what you actually bank by pruning this one
+- **FreedBytes**: the exclusive, dominated savings, what you actually bank by pruning this one
   target alone.
-- PotentialBytes: the freeable weight in its whole subtree, what could come back if this target
+- **PotentialBytes**: the freeable weight in its whole subtree, what could come back if this target
   and everything sharing its subtree were all pruned together.
-- SharedBytes: the difference, freeable weight that stays put because other targets reach it
+- **SharedBytes**: the difference, freeable weight that stays put because other targets reach it
   too (with SharedWith naming those other targets, so you can see who to co-prune).
 
 That three-number split is the honest story: you save this much by yourself, this much more is
@@ -341,10 +347,10 @@ which would push the prize below the exclusive savings, an impossible result.
 
 Two fields make the prize actionable:
 
-- PinnedBy: the locked, uncontrolled deps that directly import the module and hold it against a
+- **PinnedBy**: the locked, uncontrolled deps that directly import the module and hold it against a
   controlled cut. These name the change target: the dep to replace, patch, or upstream. One
   `go.mod replace` of the leaf usually covers every importer at once.
-- PrizeByEntryPackage: how the prize splits across the module's entry packages, so the ceiling
+- **PrizeByEntryPackage**: how the prize splits across the module's entry packages, so the ceiling
   becomes a scoped slice. It points at where the weight concentrates; it can't prove which symbols
   inside a package are safe to strip (that needs call-graph reachability from main, not link-level
   dominance), so it's a lead to investigate, not a guarantee.
@@ -430,8 +436,10 @@ general. Two facts rescue it at bonsai's scale:
   single ordering telescope to `v(all)`, the estimates always sum to the true total and converge
   quickly. The sampler is seeded with a fixed value so blame is reproducible across runs.
 
+{{< callout type="info" >}}
 Blame is opt-in (`--blame`) because most of the time the exclusive "what do I save now" number
 is what you want; the Shapley split is for when you want the accounting to balance.
+{{< /callout >}}
 
 ---
 
@@ -444,11 +452,11 @@ you don't control. (See `goversion.go`.)
 
 bonsai computes this floor over exactly the modules currently in the build, and reports:
 
-- Version: the dep-imposed floor (the highest `go` line among non-owned modules).
-- Critical: the modules pinned exactly at that floor. These are the reason for it; prune all of
+- **Version**: the dep-imposed floor (the highest `go` line among non-owned modules).
+- **Critical**: the modules pinned exactly at that floor. These are the reason for it; prune all of
   them and the floor drops.
-- NextVersion: where the floor would land if you pruned every Critical module.
-- OwnedMax: the highest directive your own modules already declare, so you can see the headroom
+- **NextVersion**: where the floor would land if you pruned every Critical module.
+- **OwnedMax**: the highest directive your own modules already declare, so you can see the headroom
   you can reclaim right now (just lower your `go` line) versus what pruning would buy you.
 
 The nice part: lowering the floor is the same lever as pruning for size. Dropping a module

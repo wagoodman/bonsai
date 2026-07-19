@@ -23,9 +23,8 @@
   background-color: var(--bonsai-ink);
 }
 
-/* gold accent on the hero gradient + inline highlights */
-.hextra-badge,
-.hx-badge {
+/* gold accent on the hero badge (hextra v0.12 uses the hx: tailwind prefix) */
+.hextra-badge {
   border-color: var(--bonsai-gold);
 }
 
@@ -36,8 +35,84 @@ mark {
   color: inherit;
 }
 
-/* hero headline gradient: violet -> gold, echoing the demo */
-.hextra-hero-headline,
-.hx-text-transparent.hx-bg-clip-text {
+/* hero headline gradient: violet -> gold, echoing the demo. the headline is a
+   bare <h1> carrying hextra's bg-clip-text utility, so match on that. */
+h1[class*="text-transparent"] {
   background-image: linear-gradient(120deg, var(--bonsai-violet), var(--bonsai-gold-strong)) !important;
+}
+
+/* ── dependency-class "lens" diagram on the landing page ──────────────────────
+   strata read top-to-bottom as reachability depth. neutral fills use currentColor
+   so they invert with the theme; class hues are fixed and read on both. */
+.bonsai-lens { max-width: 900px; }
+.bonsai-lens .lens-strata { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.bonsai-lens .stratum {
+  position: relative;
+  border-radius: 12px;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+.bonsai-lens .stratum .k {
+  font-size: 0.7rem; letter-spacing: 0.09em; text-transform: uppercase;
+  font-weight: 600; opacity: 0.65;
+}
+.bonsai-lens .stratum .t { font-size: 1.1rem; font-weight: 700; margin-top: 0.1rem; }
+.bonsai-lens .stratum .d {
+  font-size: 0.9rem; line-height: 1.5; opacity: 0.82; margin-top: 0.35rem; max-width: 64ch;
+}
+.bonsai-lens .stratum code {
+  font-size: 0.85em; padding: 0.05em 0.35em; border-radius: 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.bonsai-lens .stratum .tag {
+  position: absolute; top: 1.15rem; right: 1.25rem;
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.03em;
+  padding: 0.15rem 0.5rem; border-radius: 999px;
+}
+
+/* 1st-class: your code (violet) */
+.bonsai-lens .s-first {
+  background: color-mix(in srgb, var(--bonsai-violet) 15%, transparent);
+  border-color: color-mix(in srgb, var(--bonsai-violet) 45%, transparent);
+}
+.bonsai-lens .s-first .tag {
+  color: color-mix(in srgb, currentColor 75%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+}
+
+/* 2nd-class: the cuttable surface — the live boundary (gold, glowing) */
+.bonsai-lens .s-second {
+  background: color-mix(in srgb, var(--bonsai-gold) 14%, transparent);
+  border-color: var(--bonsai-gold);
+  box-shadow: 0 10px 34px -14px color-mix(in srgb, var(--bonsai-gold) 70%, transparent);
+}
+.bonsai-lens .s-second .tag {
+  color: var(--bonsai-ink); background: var(--bonsai-gold);
+}
+
+/* the lever: where --controlled pushes the boundary */
+.bonsai-lens .lens-shift {
+  text-align: center; font-size: 0.8rem; font-weight: 600;
+  color: var(--bonsai-gold-strong); padding: 0.15rem 0;
+}
+.dark .bonsai-lens .lens-shift { color: var(--bonsai-gold); }
+.bonsai-lens .lens-shift code {
+  background: color-mix(in srgb, var(--bonsai-gold) 18%, transparent);
+  padding: 0.05em 0.35em; border-radius: 4px;
+}
+
+/* 3rd-class: the mass most weight hides in — taller, muted */
+.bonsai-lens .s-third { min-height: 118px; }
+.bonsai-lens .s-third .weight {
+  color: var(--bonsai-green); font-weight: 700;
+}
+
+.bonsai-lens .lens-note {
+  margin-top: 1.1rem; font-size: 0.92rem; line-height: 1.6; opacity: 0.85; max-width: 70ch;
+}
+.bonsai-lens .lens-note code {
+  font-size: 0.85em; padding: 0.05em 0.35em; border-radius: 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
 }
