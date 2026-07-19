@@ -8,6 +8,9 @@
 
 *Why is it called `bonsai`? Named for the practice of keeping a tree small and healthy through deliberate pruning.*
 
+> [!NOTE]
+> **Full documentation is at [bonsai.dev docs](https://wagoodman.github.io/bonsai/)** — getting started, every subcommand and the TUI, the MCP server, the `.bonsai.yaml` config and CI gate, and the [methodology deep-dive](https://wagoodman.github.io/bonsai/docs/methodology/). This README is just the short pitch.
+
 ## Install
 
 ```sh
@@ -30,6 +33,3 @@ Which cuts are even possible comes down to how bonsai classifies each module:
 - **locked**: off-limits, never suggested.
 
 Widening `--controlled` promotes 3rd-class deps into 2nd-class candidates. That's the one lever, and it's how you reach the weight buried below your `go.mod`.
-
-> [!NOTE]
-> Full documentation lives at **[bonsai.dev docs](https://wagoodman.github.io/bonsai/)**: getting started, every subcommand and the TUI, the MCP server, the `.bonsai.yaml` config and CI gate, and the [methodology deep-dive](https://wagoodman.github.io/bonsai/docs/methodology/).
