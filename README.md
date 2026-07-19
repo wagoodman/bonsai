@@ -13,6 +13,22 @@ Go already gives you most of the raw data here. `go mod graph` dumps every edge,
 *Why is it called `bonsai`? Named for the practice of keeping a tree small and healthy through deliberate pruning.*
 
 
+## Install
+
+```sh
+curl -sSfL https://raw.githubusercontent.com/wagoodman/bonsai/main/install.sh | sh
+```
+
+That picks a sensible spot on its own: an existing writable dir on your `PATH` (like `~/.local/bin`) if you have one, otherwise `/usr/local/bin`, prompting for `sudo` only when it has to.
+
+Want a specific location instead? Pass `-b DIR`:
+
+```sh
+curl -sSfL https://raw.githubusercontent.com/wagoodman/bonsai/main/install.sh | sh -s -- -b /usr/local/bin
+```
+
+Pin a version by appending a tag (`... | sh -s -- v0.1.0`), or grab a prebuilt archive from the [releases page](https://github.com/wagoodman/bonsai/releases).
+
 ## Try it
 
 ```sh
