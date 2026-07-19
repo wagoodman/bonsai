@@ -44,7 +44,7 @@ h1[class*="text-transparent"] {
 /* ── dependency-class "lens" diagram on the landing page ──────────────────────
    strata read top-to-bottom as reachability depth. neutral fills use currentColor
    so they invert with the theme; class hues are fixed and read on both. */
-.bonsai-lens { max-width: 900px; }
+.bonsai-lens { width: 100%; max-width: 900px; margin: 0 auto; }
 .bonsai-lens .lens-strata { display: flex; flex-direction: column; gap: 0.5rem; }
 
 .bonsai-lens .stratum {
@@ -110,7 +110,8 @@ h1[class*="text-transparent"] {
 }
 
 .bonsai-lens .lens-note {
-  margin-top: 1.1rem; font-size: 0.92rem; line-height: 1.6; opacity: 0.85; max-width: 70ch;
+  margin: 1.1rem auto 0; font-size: 0.92rem; line-height: 1.6; opacity: 0.85; max-width: 70ch;
+  text-align: center;
 }
 .bonsai-lens .lens-note code {
   font-size: 0.85em; padding: 0.05em 0.35em; border-radius: 4px;

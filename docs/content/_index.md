@@ -3,25 +3,20 @@ title: bonsai
 layout: hextra-home
 ---
 
-{{< hextra/hero-badge >}}
-  <div class="hx:w-2 hx:h-2 hx:rounded-full hx:bg-primary-400"></div>
-  <span>Binary size analysis for Go</span>
-{{< /hextra/hero-badge >}}
-
-<div class="hx:mt-6 hx:mb-6">
+<div class="hx:mt-6 hx:mb-6 hx:w-full hx:text-center">
 {{< hextra/hero-headline >}}
   Find what's driving the size&nbsp;<br class="hx:sm:block hx:hidden" />of your Go binary
 {{< /hextra/hero-headline >}}
 </div>
 
-<div class="hx:mb-12">
+<div class="hx:mb-12 hx:w-full hx:text-center">
 {{< hextra/hero-subtitle >}}
   bonsai compiles your binary, measures which dependencies drive its size and&nbsp;<br class="hx:sm:block hx:hidden" />
   its minimum Go version, and reports how much each one would save if removed.
 {{< /hextra/hero-subtitle >}}
 </div>
 
-<div class="hx:mb-6">
+<div class="hx:mb-6 hx:w-full hx:text-center">
 {{< hextra/hero-button text="Get started" link="docs/getting-started" >}}
 &nbsp;&nbsp;
 {{< hextra/hero-button text="How it works" link="docs/methodology" style="background: transparent; border: 1px solid var(--bonsai-violet); color: var(--bonsai-violet);" >}}
@@ -65,11 +60,11 @@ layout: hextra-home
   >}}
 {{< /hextra/feature-grid >}}
 
-<div class="hx:mt-16 hx:mb-4">
+<div class="hx:mt-16 hx:mb-4 hx:w-full hx:text-center">
   <h2 style="font-size: 1.875rem; font-weight: 700; letter-spacing: -0.02em; border: 0;">How bonsai sees your dependencies</h2>
 </div>
 
-<p class="hx:mb-8" style="opacity: 0.82; max-width: 70ch;">Every module lands in one class, and the class decides whether a cut is even possible. The <code>--controlled</code> boundary is the one thing you move, and moving it is how you reach the weight buried deeper in the graph.</p>
+<p class="hx:mb-8 hx:text-center" style="opacity: 0.82; max-width: 70ch; margin-left: auto; margin-right: auto;">Every module lands in one class, and the class decides whether a cut is even possible. The <code>--controlled</code> boundary is the one thing you move, and moving it is how you reach the weight buried deeper in the graph.</p>
 
 <div class="bonsai-lens">
 <div class="lens-strata">
@@ -83,4 +78,6 @@ layout: hextra-home
 
 <div class="hx:mt-12"></div>
 
+<div class="hx:w-full hx:text-center">
 {{< hextra/hero-button text="Read the docs →" link="docs" >}}
+</div>
