@@ -21,20 +21,17 @@ These pages are canonical. The repo's [`README.md`](../README.md) is the short p
 
 ## Running it locally
 
-Needs **Hugo Extended** and **Go** (Go fetches the theme module; no Node required). On macOS:
-
-```sh
-brew install hugo
-```
-
-Then, from the repo root:
+Needs only **Go** (it fetches the theme module; no Node required). Hugo Extended is pinned in
+[`../.binny.yaml`](../.binny.yaml) and installed on demand by the tasks below, so you don't need
+to install it yourself. From the repo root:
 
 ```sh
 task docs:serve      # live-reloading server at http://localhost:1313/bonsai/
 task docs:build      # one-off production build into docs/public/
 ```
 
-Or directly, from this directory: `hugo server` / `hugo --minify`.
+Both install the pinned Hugo via [binny](https://github.com/anchore/binny) into `.tool/` first
+(the same edition CI uses), then run it. To grab it by hand: `binny install hugo`.
 
 ## How it's wired
 

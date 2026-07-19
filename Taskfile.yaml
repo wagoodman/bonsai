@@ -7,6 +7,8 @@ vars:
   CHRONICLE: "{{ .TOOL_DIR }}/chronicle"
   GLOW: "{{ .TOOL_DIR }}/glow"
   GORELEASER: "{{ .TOOL_DIR }}/goreleaser"
+  # absolute so it resolves from the docs tasks (which run in dir: docs)
+  HUGO: "{{ .ROOT_DIR }}/{{ .TOOL_DIR }}/hugo"
 
   OWNER: wagoodman
   PROJECT: bonsai
@@ -227,25 +229,26 @@ tasks:
   docs:serve:
     desc: Run the docs site locally with live reload (http://localhost:1313/bonsai/)
     dir: docs
-    deps: [docs:check-hugo]
-    cmd: hugo server --disableFastRender
+    deps: [docs:tools]
+    cmd: "{{ .HUGO }} server --disableFastRender"
 
   docs:build:
     desc: Build the docs site into docs/public (what CI publishes)
     dir: docs
-    deps: [docs:check-hugo]
-    cmd: hugo --minify --gc
+    deps: [docs:tools]
+    cmd: "{{ .HUGO }} --minify --gc"
 
   docs:clean:
     desc: Remove built docs artifacts
     cmd: "rm -rf docs/public docs/resources"
 
-  docs:check-hugo:
+  docs:tools:
     internal: true
-    # hextra compiles scss, so it needs the extended edition specifically
-    cmd: |
-      command -v hugo >/dev/null || { echo "hugo not found — install hugo-extended (brew install hugo)"; exit 1; }
-      hugo version | grep -q extended || { echo "found hugo but not the 'extended' edition needed for scss (brew install hugo)"; exit 1; }
+    # just the tools the docs build needs (hugo), installed via binny like everything else
+    deps: [binny]
+    status:
+      - "{{ .BINNY }} check hugo"
+    cmd: "{{ .BINNY }} install hugo -v"
     silent: true
 
   ## Cleanup tasks #################################
