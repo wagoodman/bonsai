@@ -1,0 +1,43 @@
+/* palette lifted from the bonsai TUI demo: dark warm grey base, violet primary,
+   gold accent, lime-green for "savings/positive". see docs/README.md. */
+:root {
+  /* primary (violet) — drives links, active nav, buttons. from #9659d8 */
+  --primary-hue: 269deg;
+  --primary-saturation: 62%;
+  --primary-lightness: 60%;
+
+  /* bonsai brand tokens (used by the overrides below) */
+  --bonsai-violet: #9659d8;
+  --bonsai-gold: #e0a53f;
+  --bonsai-gold-strong: #da6b1b;
+  --bonsai-green: #75bb16;
+  --bonsai-ink: #171517;
+}
+
+/* dark theme: match the TUI's near-black warm grey instead of hextra's default */
+.dark {
+  --primary-lightness: 66%;
+  background-color: var(--bonsai-ink);
+}
+.dark body {
+  background-color: var(--bonsai-ink);
+}
+
+/* gold accent on the hero gradient + inline highlights */
+.hextra-badge,
+.hx-badge {
+  border-color: var(--bonsai-gold);
+}
+
+/* code and emphasis nods to gold so the two brand colors both show up */
+.content mark,
+mark {
+  background-color: color-mix(in srgb, var(--bonsai-gold) 30%, transparent);
+  color: inherit;
+}
+
+/* hero headline gradient: violet -> gold, echoing the demo */
+.hextra-hero-headline,
+.hx-text-transparent.hx-bg-clip-text {
+  background-image: linear-gradient(120deg, var(--bonsai-violet), var(--bonsai-gold-strong)) !important;
+}

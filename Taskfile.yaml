@@ -222,6 +222,32 @@ tasks:
       - cmd: .github/scripts/ci-check.sh
         silent: true
 
+  ## Docs site tasks #################################
+
+  docs:serve:
+    desc: Run the docs site locally with live reload (http://localhost:1313/bonsai/)
+    dir: docs
+    deps: [docs:check-hugo]
+    cmd: hugo server --disableFastRender
+
+  docs:build:
+    desc: Build the docs site into docs/public (what CI publishes)
+    dir: docs
+    deps: [docs:check-hugo]
+    cmd: hugo --minify --gc
+
+  docs:clean:
+    desc: Remove built docs artifacts
+    cmd: "rm -rf docs/public docs/resources"
+
+  docs:check-hugo:
+    internal: true
+    # hextra compiles scss, so it needs the extended edition specifically
+    cmd: |
+      command -v hugo >/dev/null || { echo "hugo not found — install hugo-extended (brew install hugo)"; exit 1; }
+      hugo version | grep -q extended || { echo "found hugo but not the 'extended' edition needed for scss (brew install hugo)"; exit 1; }
+    silent: true
+
   ## Cleanup tasks #################################
 
   clean:
