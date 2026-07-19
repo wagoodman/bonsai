@@ -1,0 +1,52 @@
+# bonsai docs site (Hugo + Hextra). see docs/README.md for how to run it.
+baseURL: "https://wagoodman.github.io/bonsai/"
+title: bonsai
+
+# hextra is pulled in as a hugo module (see go.mod). no vendored theme in-tree.
+module:
+  imports:
+    - path: github.com/imfing/hextra
+
+enableRobotsTXT: true
+enableGitInfo: true
+enableInlineShortcodes: true
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true   # allow raw HTML in the hero page
+  highlight:
+    noClasses: false # let hextra theme the code blocks (dark/light aware)
+
+menu:
+  main:
+    - name: Docs
+      pageRef: /docs
+      weight: 1
+    - name: Methodology
+      pageRef: /docs/methodology
+      weight: 2
+    - name: Search
+      weight: 3
+      params:
+        type: search
+    - name: GitHub
+      weight: 4
+      url: "https://github.com/wagoodman/bonsai"
+      params:
+        icon: github
+
+params:
+  description: "Make smaller dependency trees for your Go projects."
+  navbar:
+    displayTitle: true
+    displayLogo: false
+  theme:
+    default: system
+    displayToggle: true
+  footer:
+    displayCopyright: false
+    displayPoweredBy: true
+  editURL:
+    enable: true
+    base: "https://github.com/wagoodman/bonsai/edit/main/docs/content"
