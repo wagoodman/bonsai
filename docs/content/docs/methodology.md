@@ -5,7 +5,7 @@ weight: 5
 ---
 
 {{< callout >}}
-This is the deep-dive. It mirrors [`METHODOLOGY.md`](https://github.com/wagoodman/bonsai/blob/main/METHODOLOGY.md) in the repo and is meant to be read in order. If you just want to *use* bonsai, start with [Getting started](../getting-started).
+This is the deep-dive, meant to be read in order. If you just want to *use* bonsai, start with [Getting started](../getting-started).
 {{< /callout >}}
 
 

@@ -1,12 +1,10 @@
 # bonsai docs site
 
-The [bonsai.dev docs](https://wagoodman.github.io/bonsai/) — a Hugo site using the
-[Hextra](https://github.com/imfing/hextra) theme, published to GitHub Pages.
+The [bonsai.dev docs](https://wagoodman.github.io/bonsai/) — a Hugo site using the [Hextra](https://github.com/imfing/hextra) theme, published to GitHub Pages.
 
 ## For humans and agents reading the source
 
-All the prose lives as plain Markdown under [`content/`](content/), so you can read the docs
-straight from a local checkout without building anything:
+All the prose lives as plain Markdown under [`content/`](content/), so you can read the docs straight from a local checkout without building anything:
 
 ```
 content/
@@ -16,12 +14,10 @@ content/
     getting-started.md   install, first run, reading the output
     commands.md          every subcommand, the TUI, and the MCP server
     configuration.md     the .bonsai.yaml file
-    methodology.md       the deep-dive (mirrors ../../METHODOLOGY.md)
+    methodology.md       the deep-dive on how bonsai works
 ```
 
-Content is *derived* from the repo's [`README.md`](../README.md) and
-[`METHODOLOGY.md`](../METHODOLOGY.md) but rewritten for readers rather than repo browsers. When
-behavior changes, update the root docs first (they're canonical) and reflect it here.
+These pages are canonical. The repo's [`README.md`](../README.md) is the short pitch (the GIF, install, the core idea) and points here for everything else, so when behavior changes, update the relevant page under `content/` and only touch the root `README.md` if the pitch itself moved.
 
 ## Running it locally
 
