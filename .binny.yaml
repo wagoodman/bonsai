@@ -49,8 +49,12 @@ tools:
       repo: anchore/syft
 
   - name: cosign
+    # pinned to 2.x: 3.x deprecated --oidc-issuer/--output-certificate/--output-signature and
+    # requires the new --bundle format, which install.sh -v verification doesn't speak yet.
+    # the constraint keeps `binny update` from jumping to 3.x and re-breaking signing.
     version:
-      want: v3.1.2
+      want: v2.6.4
+      constraint: "<3"
     method: github-release
     with:
       repo: sigstore/cosign
